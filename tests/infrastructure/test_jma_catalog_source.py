@@ -214,9 +214,7 @@ class TestDecoding:
         """
         good = b"J" + b"1" * 95
         corrupt = b"J" + b"\xff" + b"2" * 94
-        transport = RecordedTransport(
-            body=_zip_bytes(good + b"\n" + corrupt + b"\n")
-        )
+        transport = RecordedTransport(body=_zip_bytes(good + b"\n" + corrupt + b"\n"))
         source = JmaCatalogSource(cache_dir=tmp_path, transport=transport)
 
         lines = list(source.record_lines(1919))
@@ -316,9 +314,7 @@ class TestCache:
         # Not even a stray temporary file is left behind.
         assert list(tmp_path.iterdir()) == []
 
-    def test_a_silently_truncated_download_is_not_cached(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_silently_truncated_download_is_not_cached(self, tmp_path: Path) -> None:
         """A short transfer that never raises must still be caught.
 
         A connection can close cleanly after delivering only part of the body:

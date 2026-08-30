@@ -29,6 +29,12 @@ pythonpath = ["src"]
 # without tests/ becoming packages. Under the default prepend mode the
 # basename collision aborts collection for the whole suite.
 addopts = "--strict-markers --strict-config --import-mode=importlib"
+# --strict-markers means an unregistered marker is an error, so the one
+# network-touching test's marker is declared here. It is skipped unless
+# JMACAT_INTEGRATION is set; `-m "not integration"` deselects it outright.
+markers = [
+    "integration: touches the live JMA site; opt in with JMACAT_INTEGRATION=1",
+]
 
 [tool.ruff]
 line-length = 88

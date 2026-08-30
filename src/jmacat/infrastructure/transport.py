@@ -68,13 +68,15 @@ class UrllibTransport:
         self._user_agent = user_agent
 
     def fetch(self, url: str, *, timeout: float) -> Response:
-        request = urllib.request.Request(  # noqa: S310 - fixed https JMA host
+        # The URL is built from a fixed https template with only an integer
+        # year interpolated, so it cannot be redirected to another scheme.
+        request = urllib.request.Request(
             url,
             headers={"User-Agent": self._user_agent},
             method="GET",
         )
         try:
-            opened = urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
+            opened = urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             # urllib raises on 4xx/5xx, but an HTTPError *is* the response and
             # is readable. Turning it back into a Response is what lets the

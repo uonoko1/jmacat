@@ -13,6 +13,7 @@ Verified against the live site on 2026-08-30:
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import shutil
@@ -249,7 +250,9 @@ class JmaCatalogSource:
 
     # -- reading -----------------------------------------------------------
 
-    def _read_exactly(self, body: IO[bytes], count: int, *, year: int, url: str) -> bytes:
+    def _read_exactly(
+        self, body: IO[bytes], count: int, *, year: int, url: str
+    ) -> bytes:
         """Read `count` bytes, translating a transport failure mid-read."""
         try:
             return body.read(count)
@@ -304,7 +307,7 @@ class JmaCatalogSource:
                 f"open as a valid ZIP; the transfer was probably truncated. "
                 f"Nothing was cached, so re-running will download it again."
             )
-        os.replace(tmp_path, destination)
+        tmp_path.replace(destination)
 
     @staticmethod
     def _is_readable_archive(path: Path) -> bool:
@@ -340,8 +343,6 @@ class JmaCatalogSource:
                     # `newline=""` leaves line splitting to the wrapper without
                     # translating terminators, and the terminator is stripped
                     # below as the port requires.
-                    import io
-
                     text = io.TextIOWrapper(
                         raw, encoding="ascii", errors="replace", newline=""
                     )

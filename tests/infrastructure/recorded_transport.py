@@ -10,7 +10,7 @@ real code path.
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 
 from jmacat.infrastructure.transport import Response
 
@@ -64,14 +64,8 @@ class RecordedTransport:
         return len(self.requested_urls)
 
 
-class FailingStream(io.RawIOBase):
-    """A response body that dies partway through, as a dropped transfer does.
-
-    A truncated transfer is the failure most likely to poison a cache — the
-    bytes that did arrive look like the start of a real archive. Simulating it
-    at the stream level, rather than by pre-truncating the body, is what
-    exercises the adapter's mid-write error path.
-    """
+class _FailingRaw(io.RawIOBase):
+    """Delivers `fail_after` bytes of `body`, then raises as a reset does."""
 
     def __init__(self, body: bytes, *, fail_after: int) -> None:
         self._body = body
@@ -89,3 +83,19 @@ class FailingStream(io.RawIOBase):
         buffer[:count] = self._body[self._position : self._position + count]
         self._position += count
         return count
+
+
+def FailingStream(  # noqa: N802 - reads as a constructor at the call site
+    body: bytes, *, fail_after: int
+) -> io.BufferedReader:
+    """A response body that dies partway through, as a dropped transfer does.
+
+    A truncated transfer is the failure most likely to poison a cache — the
+    bytes that did arrive look like the start of a real archive. Simulating it
+    at the stream level, rather than by pre-truncating the body, is what
+    exercises the adapter's mid-write error path.
+
+    Wrapped in a `BufferedReader` so it is a genuine `IO[bytes]`, which is what
+    the adapter receives from `urllib` in production.
+    """
+    return io.BufferedReader(_FailingRaw(body, fail_after=fail_after))
