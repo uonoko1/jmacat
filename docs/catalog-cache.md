@@ -108,10 +108,18 @@ written, so it cannot be stored and mistaken for an archive on a later run.
 
 ## Licensing
 
-Cached files are JMA's published data, redistributed under the Japan Public
-Data License 1.0, which requires attribution. They live in the user's own
-environment and are never committed to this repository; `.gitignore` excludes
-`*.zip` and `h[0-9][0-9][0-9][0-9]` for that reason.
+Cached files are JMA's published data, available under the **Public Data
+License (Version 1.0)** (公共データ利用規約（第1.0版）), which requires
+attribution. They live in the user's own environment and are never committed to
+this repository; `.gitignore` excludes `*.zip` and `h[0-9][0-9][0-9][0-9]` for
+that reason.
 
-    Source: Japan Meteorological Agency, seismic hypocenter catalog
+    Source: Japan Meteorological Agency, Seismological Bulletin of Japan,
+    hypocenter catalog
     https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html
+
+A cached archive is byte-for-byte as JMA served it, so redistributing one
+carries the source citation above and nothing more. Anything this tool *writes*
+is processed data, and the terms then additionally require a statement that it
+was processed. See the "Data provenance and attribution" section of the
+top-level `README.md`.
