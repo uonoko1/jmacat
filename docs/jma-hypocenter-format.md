@@ -94,13 +94,13 @@ The "Type" column reproduces the specification's Fortran-style declaration.
 | 6 | Minute | 12-13 | 2 | I2 | minute (JST) | never blank | |
 | 7 | Second | 14-17 | 4 | F4.2 | s ×100 | decimals blank, or all blank, if hypocenter fixed | see *Traps* 9 — do not strip and divide |
 | 8 | Standard error of origin time | 18-21 | 4 | F4.2 | s ×100 | all blank | blank if hypocenter fixed, or if a Matched-filter template hypocenter was adopted |
-| 9 | Latitude, degrees | 22-24 | 3 | I3 | deg | never blank | signed; see *Traps* |
-| 10 | Latitude, minutes | 25-28 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 9; see *Traps* 9 |
+| 9 | Latitude, degrees | 22-24 | 3 | I3 | deg | never blank | signed, sign in c22 **or** c23; see *Traps* 2 and 11 |
+| 10 | Latitude, minutes | 25-28 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed; wholly blank on 7 `h1919` records | unsigned; sign lives in field 9; see *Traps* 9 and 10 |
 | 11 | Standard error of latitude | 29-32 | 4 | F4.2 | min ×100 | all blank | same blanking rule as field 8 |
-| 12 | Longitude, degrees | 33-36 | 4 | I4 | deg | never blank | signed; see *Traps* |
-| 13 | Longitude, minutes | 37-40 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 12; see *Traps* 9 |
+| 12 | Longitude, degrees | 33-36 | 4 | I4 | deg | never blank | signed, sign in c33 **or** c34; see *Traps* 2 and 11 |
+| 13 | Longitude, minutes | 37-40 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed; wholly blank on 4 `h1919` records | unsigned; sign lives in field 12; see *Traps* 9 and 10 |
 | 14 | Standard error of longitude | 41-44 | 4 | F4.2 | min ×100 | all blank | same blanking rule as field 8 |
-| 15 | Depth | 45-49 | 5 | F5.2 **or** I3,2X | km ×100 **or** km | — | **two mutually exclusive encodings**; see *Depth* |
+| 15 | Depth | 45-49 | 5 | F5.2 **or** I3,2X | km ×100 **or** km | — | **two mutually exclusive encodings**, plus a one-trailing-blank `F5.2` shape in `h1919`; see *Depth* |
 | 16 | Standard error of depth | 50-52 | 3 | F3.2 | km ×100 | all blank | blank unless the depth-free method was used; also blank for Matched-filter template hypocenters |
 | 17 | Magnitude 1 | 53-54 | 2 | F2.1 | mag ×10 | 2 blanks | negative values use a letter/sign code; see *Magnitude* |
 | 18 | Magnitude type 1 | 55 | 1 | A1 | — | blank | see *Magnitude type codes* |
@@ -328,6 +328,35 @@ is blank for every depth-slice/fixed record, as the specification states.
 Depth-slice step widths per the specification: 10 km (1926-1960, 1967-1982), 20 km
 (1961-1966), 1 km (1983-). Events before 1982 are progressively re-examined and replaced by
 depth-free or 1 km-step solutions.
+
+### A third shape: one trailing blank (`h1919` only)
+
+The two encodings above are what the specification describes, and the c48-49 partition it
+implies is what `h2023` shows. `h1919` adds a shape the specification does not mention: **297
+records with c48 populated and c49 blank** — one trailing blank, not two. The 1920 Haiyuan
+record (line 383) is one: c45-49 reads ` 150 `.
+
+This is not a third encoding. It is the depth-free `F5.2` form meeting *Traps* 9: the integer
+part is c45-47, the decimals c48-49, and only the last decimal column is blank. ` 150 ` is
+therefore **15.0 km**, one significant decimal instead of two.
+
+The reading is forced by physics rather than by the specification. Taking the four non-blank
+digits as whole kilometres instead gives depths up to 5,400 km across those 297 records, with
+28 of them past the ~700 km limit of observed seismicity — the deepest earthquakes ever
+recorded are near 700 km, and 5,400 km is inside the outer core. Read as `F5.2` the same set
+tops out at 540.0 km, comfortably within the seismogenic range.
+
+The discriminator survives this shape intact:
+
+| c48 | c49 | Count `h1919` | Count `h2023` | Reading |
+| --- | --- | --- | --- | --- |
+| blank | blank | 25,539 | 18,203 | `I3,2X` — whole km |
+| set | blank | 297 | 0 | `F5.2`, blank final decimal |
+| set | set | 2,399 | 238,817 | `F5.2` |
+| blank | set | **0** | **0** | does not occur |
+
+The last row is what makes "both of c48-49 blank" safe as the test: no record in either corpus
+has c48 blank while c49 is populated, so a parser keying on the pair misclassifies nothing.
 
 ## Magnitude
 
@@ -625,7 +654,10 @@ one-digit southern latitude appears as `- 7`, with a space *between* the sign an
 `int("- 7")` raises `ValueError`; `int("- 7".replace(" ", ""))` gives `-7`. Strip interior
 spaces before converting, and apply the degree field's sign to the minutes as well — the
 minutes field is always unsigned (verified: c25-28 and c37-40 are 4 digits on every record in
-`h2023`).
+`h2023`; `h1919` blanks them in part or in whole but never signs them — see *Traps* 9 and 10).
+
+The sign's *column* is not fixed, however: `h1919` also writes it one column further right.
+See *Traps* 11.
 
 **3. Negative magnitudes.** Micro-earthquakes go below zero. `-6` is M-0.6, and `A0`/`B0`/`C0`
 are M-1.0/-2.0/-3.0. A naive `int(field) / 10` gives M-6.0 for the first and raises on the
@@ -689,6 +721,61 @@ Decode by slicing the two parts separately: integer part `field[:-2]`, decimals 
 treat blank decimals as unknown and use `0` only for the arithmetic, recording that the
 precision is reduced. Do not `.strip()` the field as a whole and divide.
 
+**10. A minutes field can be blank *in its entirety* beside a populated degree field.** Trap 9
+contrasts "integer present, decimals blank" with "the field blank in its entirety", but for the
+minutes fields it does not consider the third combination the data actually contains: degrees
+present, minutes wholly absent. The specification does not describe it either.
+
+`h1919` carries it on both coordinates, independently:
+
+| Field | Records in `h1919` | Records in `h2023` |
+| --- | --- | --- |
+| latitude minutes c25-28 wholly blank | 7 | 0 |
+| longitude minutes c37-40 wholly blank | 4 | 0 |
+| *both* wholly blank on the same record | 3 | 0 |
+
+The counts differ because the two fields are blanked **independently**, and the corpus shows
+each in both states. `h1919` line 2284 has latitude minutes `30  ` with longitude minutes
+blank; line 2292 is the mirror, latitude minutes blank with longitude minutes `30  `
+(96 bytes each, trailing pad included):
+
+```
+J192502011424         4330       148         60     64J    32       OFF SHIKOTAN IS            K
+J192502030712         43         14730       60     63J    321      OFF SHIKOTAN IS            K
+```
+
+So a parser must not derive one coordinate's precision from the other's.
+
+All 11 records carry location precision `3` (fixed depth, human judgement) in c60, which is
+consistent with the reading taken here: **the epicentre is published to the whole degree**, and
+the degree field on its own is the whole of the value. The alternatives are worse — rejecting
+the record discards a real epicentre over a coarser precision, and substituting any non-zero
+minutes value invents a position JMA never published.
+
+The catch is that the decoded number cannot carry the distinction. A whole-degree latitude
+decodes to exactly `35`, which is indistinguishable — by value and by representation — from a
+determination of 35 deg 00.00 min. The difference is about 100 km of uncertainty against about
+15 m, and nothing in the number marks it. A parser must therefore carry a separate
+"minutes were known" flag per coordinate, and a caller that ignores it has a silently
+over-precise coordinate.
+
+**11. The sign is not always in the first column of the degree field.** Trap 2 describes
+`h2023`, where the minus occupies the leftmost column. `h1919` also writes it in the **second**
+column, with the digits right-aligned after it: **148 latitude fields** (` -5`) and **79
+longitude fields** (` -4`).
+
+Tightening a sign test to `field.startswith("-")` — which reads like a correctness
+improvement — therefore decodes 227 real records into the wrong hemisphere with nothing
+raised. Two of them (96 bytes each, trailing pad included):
+
+```
+I1919040209345958     -52958     1042934     200    64W             S SUMATERA, INDONESIA       
+I1919050704411301     -44836     1535154     350    82W             NEW IRELAND, P.N.G.         
+```
+
+which are 5.49 degS 104.49 degE and 4.81 degS 153.86 degE. Test for a `-` anywhere in the
+degree field, not at a fixed column.
+
 The distinct case is a field that is blank **in its entirety** (for example seconds `    ` on
 the same 1923 record): that is a genuinely absent value and must map to `None`, per trap 6.
 Distinguish "integer present, decimals blank" (a real value at lower precision) from "all
@@ -722,10 +809,20 @@ rather than guessed.
    than a practical doubt:
    - `U`: Example G, the 2023 Turkey M7.8 — record 10:17:34 JST minus 9 h equals the USGS UTC
      origin time 01:17:34.
-   - `I`: `h1919` carries `I1920121621055446     365220     1053714     150    83W         9   W NEI MONGOL, CHINA`,
+   - `I`: `h1919` line 383 carries (96 bytes, trailing pad included)
+
+     ```
+     I1920121621055446     365220     1053714     150    83W             W NEI MONGOL, CHINA         
+     ```
+
      which decodes to 1920-12-16 21:05:54.46 JST, 36.870 degN 105.619 degE, 15 km, M8.3. Minus
      9 h that is 12:05:54 UTC on 1920-12-16 — the Haiyuan earthquake, conventionally dated
      1920-12-16 12:05 UTC at about 36.6 degN 105.3 degE, M8.3.
+
+     An earlier revision of this document quoted the line with a `9` in the district column
+     (c65) and four bytes too many. The transcription was wrong; the decoded values above were
+     and are correct. On the real record c65 is blank, as are the region number and the station
+     count — see item 4.
 
    Treat all record types as JST.
 
