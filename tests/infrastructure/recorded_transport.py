@@ -64,12 +64,28 @@ class RecordedTransport:
         return len(self.requested_urls)
 
 
-def chunked(body: bytes, *, status: int = 200, content_type: str = "application/zip") -> Response:
-    """A `Response` whose body is delivered in small chunks."""
-    return Response(status=status, content_type=content_type, stream=io.BytesIO(body))
+class FailingStream(io.RawIOBase):
+    """A response body that dies partway through, as a dropped transfer does.
 
+    A truncated transfer is the failure most likely to poison a cache — the
+    bytes that did arrive look like the start of a real archive. Simulating it
+    at the stream level, rather than by pre-truncating the body, is what
+    exercises the adapter's mid-write error path.
+    """
 
-def truncating_stream(body: bytes, *, after: int) -> Iterator[bytes]:
-    """Yield `after` bytes of `body`, then fail as a dropped connection would."""
-    yield body[:after]
-    raise ConnectionResetError("connection reset by peer")
+    def __init__(self, body: bytes, *, fail_after: int) -> None:
+        self._body = body
+        self._fail_after = fail_after
+        self._position = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        if self._position >= self._fail_after:
+            raise ConnectionResetError("connection reset by peer")
+        remaining = self._fail_after - self._position
+        count = min(len(buffer), remaining)
+        buffer[:count] = self._body[self._position : self._position + count]
+        self._position += count
+        return count
