@@ -677,3 +677,45 @@ class TestHandleHygiene:
 def _open_file_count() -> int:
     """How many file descriptors this process holds open."""
     return len(list(Path("/proc/self/fd").iterdir()))
+
+
+class TestStreamClosing:
+    def test_a_stream_without_context_manager_support_is_still_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """`IO[bytes]` promises `close()`, not `__enter__`.
+
+        The transport's HTTPError path hands back an object whose
+        context-manager behaviour is incidental rather than part of the type,
+        so the adapter must not depend on it — and must still release the
+        connection.
+        """
+        closed: list[bool] = []
+
+        class CloseOnlyStream:
+            """Readable and closeable, but deliberately not a context manager."""
+
+            def __init__(self, body: bytes) -> None:
+                self._buffer = io.BytesIO(body)
+
+            def read(self, size: int = -1) -> bytes:
+                return self._buffer.read(size)
+
+            def close(self) -> None:
+                closed.append(True)
+
+        class CloseOnlyTransport:
+            def fetch(self, url: str, *, timeout: float) -> Response:
+                stream = CloseOnlyStream(SAMPLE_ZIP.read_bytes())
+                return Response(
+                    status=200,
+                    content_type="application/zip",
+                    stream=stream,  # type: ignore[arg-type]
+                )
+
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=CloseOnlyTransport(), max_attempts=1
+        )
+
+        assert len(list(source.record_lines(1919))) == 12
+        assert closed == [True]

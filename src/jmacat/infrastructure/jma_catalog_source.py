@@ -20,6 +20,7 @@ import os
 import shutil
 import zipfile
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import IO, Final
@@ -188,7 +189,12 @@ class JmaCatalogSource:
                 f"year {year}: {error}"
             ) from error
 
-        with response.stream as body:
+        # `closing`, not `with response.stream`: `IO[bytes]` guarantees
+        # `close()` but not `__enter__`, and the transport's HTTPError path
+        # hands back an object whose context-manager behaviour is incidental
+        # rather than promised. Closing it explicitly is what the type actually
+        # supports, and it still releases the connection on every path below.
+        with closing(response.stream) as body:
             self._classify_status(year, url, response.status)
             head = self._read_exactly(body, len(ZIP_MAGIC), year=year, url=url)
             self._verify_archive_magic(year, url, head, response.content_type)
