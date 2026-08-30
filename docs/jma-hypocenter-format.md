@@ -260,6 +260,48 @@ J2023050514420410 005 373234 019 1371827 025 121404165D62W711D314135NOTO PENINSU
 - Damage class c63 = `3`, tsunami class c64 = `1`
 - Determination flag c96 = `K` → high precision, manual, closely examined
 
+### Example I — blank decimal places (1923 Great Kanto earthquake, from `h1919`)
+
+The `F4.2` time and minute fields may carry an integer part with a **blank decimal part**. No
+record in `h2023` does this, but `h1919` does. Verbatim (96 bytes, `h1919` line 1130):
+
+```
+J192309011203         3506       13930        0     73J    325Y     SAGAMI BAY ?               K
+```
+
+| Field | Cols | Substring | Decoded |
+| --- | --- | --- | --- |
+| Record type | 01 | `J` | JMA |
+| Year/Mon/Day | 02-09 | `1923` `09` `01` | 1923-09-01 (JST) |
+| Hour/Min | 10-13 | `12` `03` | 12:03 (JST) |
+| Second | 14-17 | `    ` | **entirely blank — seconds unknown**, not 0 |
+| Latitude deg | 22-24 | ` 35` | 35 |
+| Latitude min | 25-28 | `06  ` | **6.00 min** (integer `06`, decimals unknown) → 35.100000 degN |
+| Longitude deg | 33-36 | ` 139` | 139 |
+| Longitude min | 37-40 | `30  ` | **30.00 min** (integer `30`, decimals unknown) → 139.500000 degE |
+| Depth | 45-49 | `  0  ` | 0 km (depth-slice form, c48-49 blank) |
+| Magnitude 1 | 53-54 | `73` | M7.3 |
+| Magnitude type 1 | 55 | `J` | MJ — Tsuboi displacement magnitude, old network |
+| Location precision | 60 | `3` | fixed depth (human judgement) |
+| Subsidiary info | 61 | `2` | insufficient JMA stations / agency-dependent |
+| Maximum intensity | 62 | `5` | shindo 5 (pre-1996, before the lower/upper split) |
+| Damage class | 63 | `Y` | damage merged into the adjacent event's grade |
+| Region name | 69-92 | `SAGAMI BAY ?            ` | the `?` is part of the 24-byte name text |
+| Determination flag | 96 | `K` | high precision (manual, closely examined) |
+
+This single record exercises six things absent from 2023: blank decimals in two fields, a fully
+blank second field, magnitude type `J`, subsidiary information `2`, maximum intensity `5`, and
+damage class `Y`.
+
+**The decoding that matters.** Latitude minutes are `06  `. The integer part is 6 and the two
+decimal places are unknown, so the value is **6.00 min** and the latitude is 35.100000 degN. A
+naive `int(field.strip()) / 100` yields `6 / 100` = 0.06 min and a latitude of 35.001000 degN —
+wrong by about 11 km, with no exception raised. See *Traps* 9.
+
+Counts in `h1919` for the partially blank case — integer part present, decimal part blank:
+5 records in latitude minutes (c27-28), 9 in longitude minutes (c39-40), 3 in seconds (c16-17).
+Small numbers, but they include the most significant earthquake in the catalog.
+
 ## Depth — the two encodings
 
 Field 15 (c45-49) is the only field with two different meanings. The specification gives it
@@ -513,6 +555,34 @@ magnitude types (different station counts); `K` and `k` are different precisions
 
 **8. Times are JST.** See *Time zone*. Any comparison against a UTC-based catalog (USGS,
 ISC) needs a 9-hour shift.
+
+**9. A blank decimal part means unknown decimals, not zero — and stripping it shifts the
+value by a factor of 100.** This is the same class of silent hundredfold error as trap 5, and
+it is easier to hit, because the obvious implementation is wrong.
+
+The `F4.2`/`F5.2`/`F3.2` fields are *fixed-position*: the last two columns are the two decimal
+places and the leading columns are the integer part. When a hypocenter is fixed, JMA leaves the
+decimal columns blank while keeping the integer part in place. `.strip()` then deletes the
+decimal columns rather than the padding, and the surviving digits get read as if they had been
+in the decimal positions.
+
+Latitude minutes `06  ` (c25-28) are **6.00 min**:
+
+| Decoding | Result | Verdict |
+| --- | --- | --- |
+| `int("06  ".strip()) / 100` | 0.06 min | **wrong by 100x, raises nothing** |
+| `int("06  ".replace(" ", "0")) / 100` | 6.00 min | numerically right, but it also silently turns a wholly blank field into `0` |
+| slice the parts: `int("06  "[:-2])` + blank decimals | 6.00 min | correct, and keeps "unknown" distinguishable |
+
+Decode by slicing the two parts separately: integer part `field[:-2]`, decimals `field[-2:]`;
+treat blank decimals as unknown and use `0` only for the arithmetic, recording that the
+precision is reduced. Do not `.strip()` the field as a whole and divide.
+
+The distinct case is a field that is blank **in its entirety** (for example seconds `    ` on
+the same 1923 record): that is a genuinely absent value and must map to `None`, per trap 6.
+Distinguish "integer present, decimals blank" (a real value at lower precision) from "all
+blank" (no value). See *Example I*, and note that zero records in `h2023` exercise either case,
+so a test suite built only on 2023 data will not catch this.
 
 ## Unresolved
 
