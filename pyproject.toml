@@ -24,7 +24,11 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "--strict-markers --strict-config"
+# importlib import mode lets two layers hold a same-named test file
+# (tests/domain/test_record.py and tests/infrastructure/test_record.py)
+# without tests/ becoming packages. Under the default prepend mode the
+# basename collision aborts collection for the whole suite.
+addopts = "--strict-markers --strict-config --import-mode=importlib"
 
 [tool.ruff]
 line-length = 88
@@ -51,3 +55,9 @@ python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 warn_unreachable = true
+# `tests/` holds no `__init__.py`, so two layers' same-named test modules would
+# otherwise collide as one "test_record" (the mypy twin of the pytest collection
+# error that --import-mode=importlib fixes). Deriving module names from these
+# roots keeps them distinct without making tests/ a package.
+mypy_path = ["src", "."]
+explicit_package_bases = true
