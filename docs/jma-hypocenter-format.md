@@ -376,6 +376,11 @@ Observed in `h2023` — type 1: `V`(157,682) `v`(88,616) blank(9,973) `D`(645) `
 Type 2: blank(256,259) `V`(463) `W`(184) `d`(76) `S`(36) `v`(2). `W` never appears as type 1
 in this year.
 
+In `h1919` — type 1: `J`(13,177) blank(11,621) `D`(2,357) `d`(643) `B`(351) `W`(84) `S`(2).
+Type 2: blank(27,968) `S`(266) `D`(1). `MJ` (`J`) is the dominant historical type and does not
+occur in 2023 at all; `W` and `S` do appear as type 1 in the historical file, so neither is
+type-2-only. Across both corpora every documented magnitude type code is observed.
+
 ## Code tables
 
 ### Travel time table codes (field 21, c59)
@@ -392,7 +397,8 @@ in this year.
 | blank | determined by another agency |
 
 Observed in `h2023`: `7`(242,448) `5`(14,485) blank(87). Blank occurs on exactly the 87 `U`
-records.
+records. In `h1919`: `1`(26,659) `5`(907) blank(669) — code `1` is the historical default and
+does not occur in 2023 at all. Codes `2`, `3`, `4` and `6` occur in neither corpus.
 
 ### Location precision codes (field 22, c60)
 
@@ -410,6 +416,8 @@ records.
 | blank | unknown |
 
 Observed in `h2023`: `1`(224,332) `2`(17,729) `M`(14,485) `3`(387) blank(87).
+In `h1919`: `2`(15,428) `7`(7,666) `1`(2,065) `5`(1,586) `3`(832) blank(658) — the historical
+file supplies `5` and `7`, which 2023 lacks. Only `4`, `8` and `9` remain unobserved.
 
 ### Maximum intensity codes (field 24, c62)
 
@@ -430,6 +438,9 @@ Observed in `h2023`: `1`(224,332) `2`(17,729) `M`(14,485) `3`(387) blank(87).
 | blank | not felt / not assigned |
 
 Observed in `h2023`: blank(254,783) `1`(1,479) `2`(561) `3`(156) `4`(33) `A`(5) `B`(2) `D`(1).
+In `h1919`: blank(11,238) `1`(8,819) `2`(4,005) `X`(2,055) `3`(1,686) `4`(304) `5`(118) `6`(10)
+— the pre-1996 codes `5`, `6` and `X` appear only in the historical file, as their date ranges
+predict. `7`, `C`, `R`, `M`, `S`, `L` and `F` occur in neither corpus.
 
 Note the collision hazard: `M`, `S` and `X` mean intensity-related things here but mean
 completely different things in other single-character fields (`M` = Matched filter in c60,
@@ -462,6 +473,11 @@ A parser covering years before 1989 must switch tables on the record's year.
 
 Observed in `h2023` — damage: blank(257,002) `2`(8) `3`(6) `1`(3) `7`(1);
 tsunami: blank(257,008) `1`(10) `2`(2).
+
+In `h1919` — damage: blank(28,121) `1`(60) `3`(19) `2`(14) `Y`(9) `5`(5) `6`(4) `4`(2) `7`(1);
+tsunami: blank(28,201) `1`(19) `T`(15). The historical file supplies damage `4`, `5`, `6` and
+`Y`, and tsunami `T`, all absent from 2023. `T` occurs only on pre-1989 records, consistent
+with the year-dependent tsunami table above. Damage `X` and tsunami `3`-`6` remain unobserved.
 
 ### District and region numbers (fields 27-28, c65-68)
 
@@ -549,7 +565,8 @@ where it becomes a fixture.
 | `F` | far field |
 
 Observed in `h2023`: `A`(145,330) `k`(52,535) `K`(29,075) `a`(21,571) `s`(6,661) `S`(1,761)
-blank(87). Case is significant: `K` and `k` are different precisions, as are `S`/`s` and `A`/`a`.
+blank(87). In `h1919`: `K`(19,957) `S`(7,621) blank(657) — only the manual codes, as expected
+for a hand-compiled era. `N` and `F` occur in neither corpus. Case is significant: `K` and `k` are different precisions, as are `S`/`s` and `A`/`a`.
 Never upper-case this field.
 
 ## `J` versus `U` records
@@ -613,6 +630,22 @@ numeric or a single letter, and the fields are adjacent with no delimiters, so r
 instead of c22-28 still yields a well-formed number. It decodes northern-hemisphere Japanese
 records correctly and silently drops the sign on everything else. Slice by the constants in
 the field table above; do not derive offsets by counting characters in a sample line.
+
+*How to re-verify the offsets from the data alone.* The minutes fields carry a sexagesimal
+quantity, so a correct slice can never reach 60.00 min. That gives a positive test rather than
+mere absence of contradiction:
+
+| Slice | Max value in `h2023` | Records >= 60.00 min |
+| --- | --- | --- |
+| latitude minutes c25-28 (correct) | 5999 | 0 |
+| longitude minutes c37-40 (correct) | 5999 | 0 |
+| latitude shifted one column left, c24-27 | — | **124,383** |
+| longitude shifted one column left, c36-39 | — | **91,948** |
+
+Both correct slices reach exactly 5999 and never 6000, which is what a hundredths-of-a-minute
+field pinned to a 60-minute wheel must do; both shifted slices produce six-figure counts of
+physically impossible values. Any candidate offset can be checked this way without consulting
+the specification, and this check is worth keeping in the test suite.
 
 **5. Depth has two encodings in one field.** See *Depth*. Reading ` 50  ` as F5.2 gives
 0.50 km instead of 50 km — a hundredfold error on a field where nothing looks wrong.
