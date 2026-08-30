@@ -119,6 +119,34 @@ def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
     return sign * (whole + fraction / MINUTES_PER_DEGREE)
 
 
+def depth_km(raw: str) -> Decimal | None:
+    """Field 15 (c45-49) -> kilometres, honouring both of its encodings.
+
+    Format doc, *Depth*: this is the only field with two meanings, and the
+    reliable discriminator is the two trailing blanks at c48-49.
+
+    * `c48-49` both blank - the `I3,2X` depth-slice/fixed form. The three
+      digits at c45-47 are whole kilometres: ` 50  ` is 50 km. Reading it as
+      F5.2 would give 0.50 km, a hundredfold error (Traps 5).
+    * otherwise - the `F5.2` depth-free form, hundredths of a km. The integer
+      part is c45-47 and the decimals c48-49, so ` 2645` is 26.45 km.
+
+    The F5.2 branch goes through the same fixed-point decoding as the minutes
+    fields, because it meets Traps 9 too: h1919 holds 297 records whose final
+    decimal column alone is blank (` 150 ` = 15.0 km). Taking such a field as
+    four digits of whole kilometres instead yields depths up to 5400 km,
+    deeper than the Earth; the fixed-point reading tops out at 540 km.
+    """
+    if raw[3:5] == "  ":
+        whole = raw[:3].strip()
+        if not whole:
+            return None
+        if not whole.isdigit():
+            raise FieldError("depth", "45-49", raw, "not an integer number of km")
+        return Decimal(whole)
+    return _fixed_point(raw, field="depth", columns="45-49")
+
+
 def parse_record(line: str) -> None:
     """Decode one 96-byte hypocenter record."""
     if len(line) != RECORD_LENGTH:
