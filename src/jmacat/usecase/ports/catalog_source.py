@@ -57,11 +57,34 @@ class CatalogSource(Protocol):
         with the line terminator stripped. The catalog is fixed-width text; a
         line is passed through uninterpreted.
 
-        An implementation should do enough work eagerly to know whether the year
-        can be served — resolve the archive, observe the 404 — and raise before
-        returning, so the failure surfaces at the call site rather than deep
-        inside the caller's loop. The lines themselves must still be produced
-        lazily.
+        **`record_lines` must not itself be a generator function.** An
+        implementation MUST resolve availability first — issue the request,
+        observe the 404, check the archive magic bytes — and only then return a
+        *separate* generator for the lines. The lines themselves must still be
+        produced lazily; it is the availability decision that is eager.
+
+        The mechanism matters because the natural spelling is wrong and type
+        checks anyway::
+
+            def record_lines(self, year: int) -> Iterator[str]:
+                if unavailable:
+                    raise CatalogYearUnavailableError(year)   # never runs
+                yield from lines
+
+        A `yield` anywhere in the body makes the whole function a generator
+        function, so calling it executes none of that body: it returns a
+        generator and raises nothing. The 404 then surfaces at the caller's
+        first `next()`, escaping any `try`/`except` around the call site — and a
+        failed download becomes an empty catalog, the exact silent wrong answer
+        this port exists to prevent. Write it as two functions instead::
+
+            def record_lines(self, year: int) -> Iterator[str]:
+                archive = self._resolve(year)      # raises here, eagerly
+                return self._lines(archive)        # a separate generator
+
+        `jmacat.usecase.ports.contract.check_unavailable_year_fails_eagerly`
+        enforces this; run it against your implementation rather than trusting
+        the shape to be right.
 
         Raises:
             CatalogYearUnavailableError: JMA does not publish this year. The

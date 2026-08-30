@@ -28,6 +28,7 @@ from jmacat.usecase.errors import (
     PortError,
 )
 from jmacat.usecase.ports.catalog_source import CatalogSource
+from jmacat.usecase.ports.contract import check_unavailable_year_fails_eagerly
 from jmacat.usecase.ports.event_writer import EventWriter
 from tests.fakes import (
     FailingEventWriter,
@@ -131,6 +132,21 @@ class TestCatalogSourceFailure:
 
         with pytest.raises(CatalogYearUnavailableError):
             source.record_lines(2024)
+
+    def test_the_unavailable_year_fake_honours_the_shared_eager_contract(self) -> None:
+        """The same check issue #6's HTTP adapter runs against itself.
+
+        Asserted here too so the fakes cannot drift from the rule their
+        production counterparts are held to.
+        """
+        check_unavailable_year_fails_eagerly(
+            UnavailableYearCatalogSource(), unavailable_year=2024
+        )
+
+    def test_the_in_memory_fake_honours_the_shared_eager_contract(self) -> None:
+        check_unavailable_year_fails_eagerly(
+            InMemoryCatalogSource({2011: SAMPLE_LINES}), unavailable_year=1998
+        )
 
 
 class TestEventWriterProtocolConformance:
