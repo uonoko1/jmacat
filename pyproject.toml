@@ -35,6 +35,13 @@ line-length = 88
 src = ["src", "tests"]
 target-version = "py311"
 
+[tool.ruff.lint.isort]
+# `src = ["src", "tests"]` makes `tests/` a source root, so isort resolves the
+# name `tests` by looking for `tests/tests/` - finds nothing, and files
+# `from tests.fakes import ...` under third-party. Naming it explicitly keeps
+# the shared test doubles in the first-party block with `jmacat`.
+known-first-party = ["tests"]
+
 [tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors

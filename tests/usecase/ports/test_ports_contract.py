@@ -229,7 +229,7 @@ class TestEventWriterLifecycle:
         # around it. Combining them would behave identically - `with A, B:` is
         # defined as nested `with`, so __exit__ ordering is unchanged - so this
         # is a style choice, not a correctness one.
-        with pytest.raises(RuntimeError):  # noqa: SIM117
+        with pytest.raises(RuntimeError):
             with writer:
                 writer.write("a")
                 raise RuntimeError("conversion failed")
@@ -259,7 +259,7 @@ class TestEventWriterFailure:
 
         # Kept split for the same readability reason as above; `with A, B:` would
         # be equivalent, not different.
-        with pytest.raises(EventWriterError):  # noqa: SIM117
+        with pytest.raises(EventWriterError):
             with writer:
                 writer.write("a")
 
