@@ -62,6 +62,44 @@ user does not have to know the cache exists, let alone find and delete it.
 The check reads only the central directory, not the 25 MB of records, so it
 costs a seek rather than a decompression.
 
+**On read, an entry that will not open is discarded, not just reported.** The
+central-directory check above is a table of contents: passing it proves the file
+is a ZIP and names its members, and nothing more. An archive can pass it and
+still be unreadable — an unsupported compression method, an encrypted member, a
+damaged compressed stream — because all of that surfaces only when the member is
+actually opened.
+
+That gap matters because such a file *is* cached: it passed every check made on
+the way in. Left there, it would fail identically on every later run without
+re-downloading, which is the one thing this design promises cannot happen. So
+when opening the member fails, the entry is removed as well as reported, and the
+next run fetches a fresh copy.
+
+The same applies to an entry that is not a file at all. If a directory, or
+something unreadable, occupies `h{year}.zip`, the removal itself fails; that is
+reported with a message naming the path rather than crashing, because it is the
+one case a re-run cannot clear on its own.
+
+## Guards on what is read out
+
+Records are a fixed 96 bytes (see `docs/jma-hypocenter-format.md`), and the
+reader will not assemble a line longer than 64 KiB — about 680 records' worth.
+The bound exists because reading "until the next newline" is unbounded by
+nature: a member containing no newline at all would be read into a single
+string, so a 200 KB archive expanding to 200 MB of one character would defeat
+the constant-memory guarantee that the rest of this design is built around. A
+line over the cap is reported as a corrupt archive rather than split, since two
+half-records could each look plausible to the parser.
+
+## Running more than one process at a time
+
+Concurrent fetches of the same year are safe. Each downloads to its own
+temporary file and renames it into place, and the rename is atomic, so the
+losers of the race are simply overwritten by an identical file — verified with
+six concurrent processes producing one byte-identical archive and no leftover
+temporary files. Nothing is locked and nothing needs to be: the worst case is
+that the year is downloaded more than once.
+
 ## What is *not* cached
 
 A failed request never becomes a cache entry. In particular the 404 HTML body
