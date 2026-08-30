@@ -460,6 +460,41 @@ def test_the_two_minute_flags_are_independent_of_each_other() -> None:
     assert precise_longitude.longitude_minutes_are_known is True
 
 
+def test_a_whole_degree_epicentre_south_and_west_keeps_its_signs() -> None:
+    """The whole-degree branch must carry the sign through, in a full record.
+
+    **The input line is constructed, not sampled.** Neither corpus holds a
+    record combining a negative degree field with wholly blank minutes, so
+    CONTRIBUTING's preference for verbatim lines cannot be honoured here and
+    the case would otherwise go untested: with the sign dropped from that
+    branch, every test in this suite still passes.
+
+    The line is the Kermadec record above (h2023 line 15160, format doc
+    Example F) with only its two minutes fields blanked, so every other column
+    remains a real record's bytes and the degree fields `-30` and `-178` are
+    JMA's own. Only the combination is synthetic.
+
+    It is a combination the catalog can produce: `h1919` holds 344 records with
+    a negative latitude degree field and 170 with a negative longitude one, and
+    separately 7 and 4 records with the corresponding minutes field blank. A
+    year not yet sampled may hold a record in both sets, and reading it without
+    the sign would place the epicentre in the wrong hemisphere - 30 degN 178
+    degE instead of 30 degS 178 degW, roughly 13,000 km away - with nothing
+    raised. The format doc's Traps 2 records that exact mistake being made once
+    already on this very record.
+    """
+    southwest_whole_degree = (
+        "U2023012619455283    -30        -178        131     56B         9   "
+        "KERMADEC ISL., N.Z.L.       "
+    )
+    assert len(southwest_whole_degree) == 96
+    event = parse_record(southwest_whole_degree)
+    assert event.latitude == Decimal(-30)
+    assert event.longitude == Decimal(-178)
+    assert event.latitude_minutes_are_known is False
+    assert event.longitude_minutes_are_known is False
+
+
 def test_a_written_zero_station_count_is_zero_not_absent() -> None:
     """h1919 carries 247 records whose station count c93-95 is written `  0`.
 

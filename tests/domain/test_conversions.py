@@ -387,3 +387,26 @@ def test_blank_minutes_with_degrees_present_mean_whole_degree_precision() -> Non
     precision so this does not masquerade as an exact 35.000000.
     """
     assert decimal_degrees(" 35", "    ", field="latitude") == Decimal(35)
+
+
+def test_a_negative_degree_with_blank_minutes_keeps_its_hemisphere() -> None:
+    """The whole-degree branch must apply the sign, not drop it.
+
+    Constructed, not sampled: no record in `h2023` or `h1919` combines a
+    negative degree field with a wholly blank minutes field, so no verbatim
+    line can exercise this path and CONTRIBUTING's "prefer real records" rule
+    cannot be met here. The inputs are still not invented - both halves are
+    real. `- 7` is the latitude degree field of h2023 line 5901 (TANIMBAR IS.,
+    format doc Example E), and the blank minutes field is that of h1919
+    line 1129. What is constructed is only their combination.
+
+    The combination is reachable: `h1919` carries 344 records with a negative
+    latitude degree field and 170 with a negative longitude one, and 7 and 4
+    respectively with blank minutes, so an unsampled year may well hold a
+    record in both sets. Dropping the sign there would place the epicentre in
+    the opposite hemisphere while raising nothing - the same failure the format
+    doc's Traps 2 records having been made once already, when a Kermadec
+    178 degW was read as 178 degE.
+    """
+    assert decimal_degrees("- 7", "    ", field="latitude") == Decimal(-7)
+    assert decimal_degrees("-178", "    ", field="longitude") == Decimal(-178)
