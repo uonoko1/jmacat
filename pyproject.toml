@@ -1,0 +1,55 @@
+[project]
+name = "jmacat"
+version = "0.1.0"
+description = "Preprocessing tool for the JMA seismic catalog (research and education use)"
+requires-python = ">=3.11"
+# Runtime dependencies are added by the layer that needs them. `domain/` and
+# `usecase/` must stay standard-library only; see CONTRIBUTING.md.
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jmacat"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "PTH",  # flake8-use-pathlib
+    "RUF",  # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+# The guard walks source files that are never imported, so an untyped
+# third-party stub must never silently pass as Any.
+warn_unreachable = true
