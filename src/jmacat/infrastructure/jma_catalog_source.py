@@ -16,9 +16,11 @@ from __future__ import annotations
 import http.client
 import io
 import logging
+import lzma
 import os
 import shutil
 import zipfile
+import zlib
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -51,6 +53,39 @@ CHUNK_BYTES: Final = 64 * 1024
 #: ordinary truncated download. Catching only `OSError` lets the single most
 #: likely truncation escape as a non-port error and strand a partial file.
 TRANSFER_FAILURES: Final = (OSError, http.client.HTTPException)
+
+#: Every way `zipfile` can refuse an archive whose central directory parsed.
+#:
+#: `except (BadZipFile, OSError)` is the guard that looks right and is not. The
+#: central directory is a *table of contents*: reading it proves the file is a
+#: ZIP and names its members, and nothing more. Everything that can be wrong
+#: with the member itself surfaces later, at `open()` or mid-read, and almost
+#: none of it arrives as an `OSError`:
+#:
+#: - `NotImplementedError` — a compression method this build cannot inflate
+#:   (method 99 is WinZip AES, common enough to meet in the wild).
+#: - `RuntimeError` — an encrypted member, refused for want of a password.
+#: - `zlib.error` / `lzma.LZMAError` — a damaged compressed stream, raised
+#:   part-way through reading, after lines have already been handed to the
+#:   caller. (bz2 reports the same condition as `OSError`, which is why the
+#:   family is not uniform and why guessing at it does not work.)
+#: - `EOFError` — a decompressor asked to continue past a stream that ended.
+#: - `ValueError` — reading from a member handle closed underneath us.
+#:
+#: All of them mean the same thing to a user: this archive cannot be read.
+#: Enumerating them here rather than at each call site is what stops the next
+#: one from escaping as a native exception the port never promised.
+ARCHIVE_FAILURES: Final = (
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    NotImplementedError,
+    RuntimeError,
+    zlib.error,
+    lzma.LZMAError,
+    EOFError,
+    ValueError,
+    OSError,
+)
 
 DEFAULT_TIMEOUT_SECONDS: Final = 30.0
 
@@ -126,7 +161,7 @@ class JmaCatalogSource:
         served as a permanently broken cache entry.
         """
         cached = self.cache_path(year)
-        if cached.exists():
+        if self._exists(cached):
             if self._is_readable_archive(cached):
                 logger.debug("Using cached JMA archive for %d at %s", year, cached)
                 return cached
@@ -136,10 +171,78 @@ class JmaCatalogSource:
                 year,
                 cached,
             )
-            cached.unlink(missing_ok=True)
+            self._discard(cached, year)
 
+        self._ensure_cache_dir(year)
         self._download(year, cached)
         return cached
+
+    def _ensure_cache_dir(self, year: int) -> None:
+        """Create the cache directory, or explain why it cannot exist.
+
+        `exist_ok=True` forgives a directory that is already there; it does not
+        forgive a *regular file* sitting where the directory belongs, which is
+        `FileExistsError` — what a user who pointed `JMACAT_CACHE_DIR` at a file
+        hits on their first fetch. `PermissionError` on an unwritable parent
+        lands here too. Neither is a transport failure, and unguarded both
+        escape as non-port exceptions.
+
+        Done here, before the retry loop, rather than inside `_write_atomically`
+        where the `mkdir` used to live. A directory that cannot be created will
+        not become creatable on the second attempt, so retrying is pure delay —
+        and worse, the loop's exhaustion message blames the network and tells
+        the user to check their connection to www.data.jma.go.jp for what is a
+        local misconfiguration.
+        """
+        directory = self._cache_dir
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise CatalogRetrievalError(
+                f"The cache directory {directory} could not be created or used "
+                f"while fetching year {year}: {error}. Check that it is a "
+                f"writable directory, or set JMACAT_CACHE_DIR to one that is."
+            ) from error
+
+    @staticmethod
+    def _exists(path: Path) -> bool:
+        """`Path.exists`, treating an unstattable path as absent.
+
+        `exists()` is documented to swallow `OSError` for a path that merely is
+        not there, but it still raises for one the OS refuses to stat at all —
+        a component longer than NAME_MAX, an unreadable parent directory. That
+        is a cache problem, not a reason to crash before a fetch is attempted,
+        and reporting "not cached" sends it down the download path where the
+        same condition surfaces with a message that names the cache.
+        """
+        try:
+            return path.exists()
+        except OSError:
+            return False
+
+    def _discard(self, cached: Path, year: int) -> None:
+        """Remove a cache entry that must not be served, or say why it cannot be.
+
+        `unlink` is not the safe no-op it looks like. A *directory* under the
+        archive's name raises `IsADirectoryError`; a read-only cache directory
+        holding a corrupt entry raises `PermissionError`. Both are `OSError`s
+        with nothing to do with the transport, and unguarded both escape as
+        non-port exceptions — leaving the user permanently stuck, with no fetch
+        even attempted and no message naming the cache they need to clear.
+
+        Not retryable in the sense that matters: re-running changes nothing
+        until the user intervenes. It is still a `CatalogRetrievalError`,
+        because the alternative type would tell them JMA has not published the
+        year, which is false and points them away from the actual fix.
+        """
+        try:
+            cached.unlink(missing_ok=True)
+        except OSError as error:
+            raise CatalogRetrievalError(
+                f"The cached JMA archive for year {year} at {cached} cannot be "
+                f"used and could not be removed: {error}. Delete it by hand — "
+                f"or point JMACAT_CACHE_DIR somewhere writable — and re-run."
+            ) from error
 
     def cache_path(self, year: int) -> Path:
         """Where `year`'s archive is cached. Public so a CLI can report it."""
@@ -324,7 +427,6 @@ class JmaCatalogSource:
         `Path.replace` is atomic within a filesystem, and the temporary file is
         created in the cache directory so the rename never crosses one.
         """
-        destination.parent.mkdir(parents=True, exist_ok=True)
         tmp_path: Path | None = None
         try:
             with NamedTemporaryFile(
@@ -365,7 +467,7 @@ class JmaCatalogSource:
         try:
             with zipfile.ZipFile(path) as archive:
                 return bool(archive.namelist())
-        except (zipfile.BadZipFile, OSError):
+        except ARCHIVE_FAILURES:
             return False
 
     def _open_lines(self, archive_path: Path, year: int) -> Iterator[str]:
@@ -379,14 +481,23 @@ class JmaCatalogSource:
         """
         try:
             archive = zipfile.ZipFile(archive_path)
-        except (zipfile.BadZipFile, OSError) as error:
+        except ARCHIVE_FAILURES as error:
+            self._discard(archive_path, year)
             raise self._unreadable(archive_path, year, error) from error
 
         try:
             member = self._single_member(archive, archive_path, year)
             raw = archive.open(member)
-        except (zipfile.BadZipFile, OSError) as error:
+        except ARCHIVE_FAILURES as error:
             archive.close()
+            # Discard, and this is the case that most needs it. An archive
+            # whose member will not open — an unsupported compression method,
+            # an encrypted member — has an intact central directory, so
+            # `_is_readable_archive` says yes and it is cached. Left there, it
+            # fails identically on every later run *without re-downloading*:
+            # a permanent failure that no amount of re-running clears, which is
+            # exactly what docs/catalog-cache.md promises cannot happen.
+            self._discard(archive_path, year)
             raise self._unreadable(archive_path, year, error) from error
         except BaseException:
             archive.close()
@@ -426,7 +537,7 @@ class JmaCatalogSource:
             while True:
                 try:
                     line = text.readline()
-                except (zipfile.BadZipFile, OSError) as error:
+                except ARCHIVE_FAILURES as error:
                     raise self._unreadable(archive_path, year, error) from error
                 if not line:
                     return
