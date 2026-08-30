@@ -24,9 +24,16 @@ from typing import Protocol, TypeVar, runtime_checkable
 #     issue #3 has not agreed on yet, and would make `usecase/ports/` fail to
 #     import until that issue lands - blocking work that only needs the seam.
 #   - A TypeVar states the actual contract: a writer is a sink of *some* event
-#     type, and the use case that owns both must agree on which. `EventWriter`
-#     is covariant-free and used only as a parameter type, so an invariant
-#     TypeVar is correct here.
+#     type, and the use case that owns both must agree on which.
+#
+# The TypeVar is *contravariant* because the event type appears only in parameter
+# position (`write`, `write_many`) and never in a return type. That makes a writer
+# of a wider event type usable wherever a narrower one is expected — an
+# `EventWriter[object]` can accept `HypocenterEvent`s — which is the sound
+# direction for a sink. Contravariance is not optional here: an invariant TypeVar
+# does not compile in this position, and mypy --strict rejects it outright with
+#   error: Invariant type variable "T" used in protocol where contravariant one
+#   is expected  [misc]
 #
 # When issue #3 lands, `EventWriter[HypocenterEvent]` is the intended spelling at
 # the use case boundary; nothing in this file needs to change to allow it.
