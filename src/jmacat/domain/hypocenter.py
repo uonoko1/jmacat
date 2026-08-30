@@ -280,6 +280,13 @@ class RecordType(Enum):
 # format doc's Traps 4 records that these offsets were once derived by counting
 # characters in northern-hemisphere sample lines, which silently drops the sign
 # column on every southern and western record.
+RECORD_TYPE = (1, 1)
+YEAR = (2, 5)
+MONTH = (6, 7)
+DAY = (8, 9)
+HOUR = (10, 11)
+MINUTE = (12, 13)
+SECOND = (14, 17)
 LATITUDE_DEGREES = (22, 24)
 LATITUDE_MINUTES = (25, 28)
 LONGITUDE_DEGREES = (33, 36)
@@ -380,22 +387,27 @@ def parse_record(line: str) -> Hypocenter:
     if len(line) != RECORD_LENGTH:
         raise RecordLengthError(len(line))
 
-    type_code = line[0]
+    type_code = _columns(line, RECORD_TYPE)
     try:
         record_type = RecordType(type_code)
     except ValueError as error:
         raise FieldError(
             "record type",
-            "01",
+            _span(RECORD_TYPE),
             type_code,
             "not one of the defined codes J, U and I",
         ) from error
 
-    second = line[13:17]
+    second = _columns(line, SECOND)
     return Hypocenter(
         record_type=record_type,
         origin_time=origin_time(
-            line[1:5], line[5:7], line[7:9], line[9:11], line[11:13], second
+            _columns(line, YEAR),
+            _columns(line, MONTH),
+            _columns(line, DAY),
+            _columns(line, HOUR),
+            _columns(line, MINUTE),
+            second,
         ),
         # Blank decimals still mean a known second; only a wholly blank field
         # means the second was never determined (format doc, Traps 9).
