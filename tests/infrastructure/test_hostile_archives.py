@@ -24,7 +24,9 @@ import pytest
 from jmacat.infrastructure.jma_catalog_source import (
     MAX_LINE_CHARS,
     JmaCatalogSource,
+    default_cache_dir,
 )
+from jmacat.infrastructure.transport import Response
 from jmacat.usecase.errors import (
     CatalogRetrievalError,
     CatalogYearUnavailableError,
@@ -400,3 +402,103 @@ class TestEmptyArchive:
             source.record_lines(2024)
 
         assert "lag" in str(caught.value)
+
+
+class TestFoundBySweepingTheRestOfTheModule:
+    """Same species as the rest of this file, found by enumerating every call.
+
+    Not reported in review. Listed together because what they have in common is
+    the finding, not the symptom: an unguarded standard-library call raising
+    something the port never promised.
+    """
+
+    def test_a_directory_appearing_under_the_archive_name_is_a_port_error(
+        self, tmp_path: Path
+    ) -> None:
+        """The rename is atomic, not infallible.
+
+        `_ensure_cached` clears an unusable entry before the download starts,
+        so the only way to reach `replace` with a directory in the way is for
+        one to appear in the window between that check and the rename. Narrow,
+        but it is the atomic-write path, whose whole purpose is that nothing is
+        left behind however it fails.
+        """
+        body = _one_member_zip(b"J" + b"0" * 95 + b"\n")
+
+        class PlantsADirectory(RecordedTransport):
+            """Creates the obstacle mid-download, inside the TOCTOU window."""
+
+            def fetch(self, url: str, *, timeout: float) -> Response:
+                (tmp_path / "h1919.zip").mkdir(exist_ok=True)
+                return super().fetch(url, timeout=timeout)
+
+        source = JmaCatalogSource(
+            cache_dir=tmp_path,
+            transport=PlantsADirectory(
+                status=200, body=body, content_type="application/zip"
+            ),
+            max_attempts=1,
+        )
+
+        with pytest.raises(PortError):
+            source.record_lines(1919)
+
+        assert not list(tmp_path.glob(".h1919.*")), (
+            "the temporary file must not survive a failed rename"
+        )
+
+    def test_a_cleanup_failure_does_not_replace_the_real_diagnosis(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Removing the partial file must not become the reported failure.
+
+        Every cleanup here runs while a failure is already being reported. A
+        `PermissionError` from the cleanup would replace the message explaining
+        what actually went wrong — strictly worse than a stray temporary file,
+        which at least carries a `.partial` suffix and can never be mistaken
+        for a cache entry.
+
+        The cleanup is made to fail directly rather than by a read-only
+        directory, which would trip the write itself and never reach here.
+        """
+        original_unlink = Path.unlink
+
+        def refuse(self: Path, *args: object, **kwargs: object) -> None:
+            if self.name.endswith(".partial"):
+                raise PermissionError(13, "Permission denied", str(self))
+            original_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        source = JmaCatalogSource(
+            cache_dir=tmp_path,
+            transport=_zip_transport(b"PK\x03\x04 not really an archive"),
+            max_attempts=1,
+        )
+
+        with caplog.at_level("WARNING"):
+            with pytest.raises(CatalogRetrievalError) as caught:
+                source.record_lines(1919)
+
+        assert "did not open as a valid ZIP" in str(caught.value)
+        assert "Permission" not in str(caught.value)
+        assert any("temporary file" in record.message for record in caplog.records), (
+            "a leftover temporary file must still be logged, not silently ignored"
+        )
+
+    def test_an_unresolvable_home_directory_is_a_port_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`expanduser()` raises `RuntimeError`, which is not an `OSError`.
+
+        Reachable wherever `~` cannot be resolved — no `HOME` and no passwd
+        entry for the uid, ordinary in a container or under an HPC batch
+        scheduler. A bare `RuntimeError` from a function whose job is to name a
+        path tells the user nothing about which variable to set.
+        """
+        monkeypatch.setenv("JMACAT_CACHE_DIR", "~nosuchuser12345/jmacat")
+
+        with pytest.raises(PortError, match="JMACAT_CACHE_DIR"):
+            default_cache_dir()

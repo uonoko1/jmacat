@@ -127,12 +127,32 @@ CACHE_ENV_VAR: Final = "JMACAT_CACHE_DIR"
 
 
 def default_cache_dir() -> Path:
-    """The cache directory used when none is passed explicitly."""
+    """The cache directory used when none is passed explicitly.
+
+    Resolution only — nothing here touches the filesystem. Whether the
+    directory exists, is writable, or is a file is settled by
+    `_ensure_cache_dir` at the moment it matters; checking it here as well
+    would do I/O in a resolver and still race with the `mkdir` that follows.
+
+    What *is* checked here is that the path can be resolved at all. Both
+    `expanduser()` and `Path.home()` raise `RuntimeError` when a `~` cannot be
+    resolved — no `HOME` and no passwd entry for the uid, which is ordinary in
+    a container or under some HPC batch schedulers. Unguarded that surfaces as
+    a bare `RuntimeError` from a function whose job is to name a path, with
+    nothing to tell the user which of the three environment variables to set.
+    """
     override = os.environ.get(CACHE_ENV_VAR)
-    if override:
-        return Path(override).expanduser()
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
+    try:
+        if override:
+            return Path(override).expanduser()
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
+    except RuntimeError as error:
+        raise CatalogRetrievalError(
+            f"The default cache directory could not be determined: {error}. "
+            f"This happens when a path starts with '~' and no home directory "
+            f"can be resolved. Set {CACHE_ENV_VAR} to an absolute path."
+        ) from error
     return base / "jmacat"
 
 
@@ -498,8 +518,7 @@ class JmaCatalogSource:
                 tmp.write(head)
                 shutil.copyfileobj(body, tmp, CHUNK_BYTES)
         except TRANSFER_FAILURES as error:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
+            self._remove_quietly(tmp_path)
             raise CatalogRetrievalError(
                 f"The transfer of {url} for year {year} failed before the "
                 f"archive was complete: {error}. Nothing was written to the "
@@ -508,13 +527,48 @@ class JmaCatalogSource:
 
         assert tmp_path is not None
         if not self._is_readable_archive(tmp_path):
-            tmp_path.unlink(missing_ok=True)
+            self._remove_quietly(tmp_path)
             raise CatalogRetrievalError(
                 f"The archive downloaded from {url} for year {year} did not "
                 f"open as a valid ZIP; the transfer was probably truncated. "
                 f"Nothing was cached, so re-running will download it again."
             )
-        tmp_path.replace(destination)
+        try:
+            tmp_path.replace(destination)
+        except OSError as error:
+            # The rename is atomic, not infallible. `_ensure_cached` clears an
+            # unusable entry before the download starts, but a *directory* can
+            # appear under the archive's name in the window between that check
+            # and this rename — a concurrent extraction, another tool — and
+            # then `replace` raises `IsADirectoryError`. Report it against the
+            # cache, and take the temporary file with us: leaving it behind
+            # would contradict the "not even a stray temporary file" promise
+            # this method exists to keep.
+            self._remove_quietly(tmp_path)
+            raise CatalogRetrievalError(
+                f"The archive for year {year} was downloaded but could not be "
+                f"moved into place at {destination}: {error}. Check what "
+                f"occupies that path; nothing was cached."
+            ) from error
+
+    @staticmethod
+    def _remove_quietly(path: Path | None) -> None:
+        """Delete a temporary file, never raising in place of a real diagnosis.
+
+        Every call site is already reporting a failure. If the cleanup itself
+        raises — a read-only cache directory, a path that is not a file — the
+        `PermissionError` would replace the message explaining what actually
+        went wrong, which is strictly worse than a stray temporary file. The
+        leftover is logged rather than silently swallowed, so it is still
+        discoverable; and it cannot be mistaken for a cache entry, since it
+        carries the `.partial` suffix and never the archive's name.
+        """
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning("Could not remove the temporary file %s: %s", path, error)
 
     @staticmethod
     def _is_readable_archive(path: Path) -> bool:
