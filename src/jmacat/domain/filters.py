@@ -27,6 +27,17 @@ Bounds in any zone are compared by absolute instant.
 **A bounding box may cross the antimeridian**, written as `west > east`. The
 catalog holds events on both sides of ±180. See `BoundingBox`.
 
+Note one asymmetry between the second rule and the third. An unbounded
+`magnitude_range` / `depth_range` asserts nothing and therefore drops
+nothing, admitting even a record whose value is missing — but an unbounded
+`time_range()` still rejects a naive `origin_time`. The two answer different
+questions. A missing magnitude is a fact about the record, and a filter
+making no claim has no grounds to judge it. A naive origin time is a defect
+in the event itself: the value is present but its meaning is ambiguous by
+nine hours, and no bound, however wide, resolves that. Admitting it would
+pass on a record that cannot be placed on a time line at all, so
+`time_range()` refuses it whether or not it is bounded.
+
 Named areas (`named_area`) are **approximate rectangles, not boundaries**. See
 `NAMED_AREAS` for the limitation and the provenance of each box.
 """
@@ -64,8 +75,13 @@ class FilterableEvent(Protocol):
     importing the other, and lets a test stub or a future record type satisfy
     the filters without inheriting anything.
 
-    `depth_km` and `magnitude` are optional because the catalog leaves them
-    blank: 9,973 of 257,020 `h2023` records carry no magnitude. See
+    `magnitude` is optional because the catalog leaves it blank: 9,973 of
+    257,020 `h2023` records and 11,621 of 28,235 `h1919` records carry no
+    magnitude. `depth_km` is optional defensively rather than empirically —
+    depth is blank on no record of either corpus, and the format
+    specification gives the field no null representation — so the `None` is
+    there to keep the two optional measurements under one policy, and to
+    absorb a source that does omit it, not because this catalog does. See
     `docs/jma-hypocenter-format.md` for the field-level blanking rules.
     """
 
@@ -86,12 +102,19 @@ class FilterableEvent(Protocol):
 
     @property
     def depth_km(self) -> float | None:
-        """Depth in kilometres, or None when the catalog leaves it blank."""
+        """Depth in kilometres, or None if a source omits it.
+
+        Never None in `h2023` or `h1919`; see the class docstring.
+        """
         ...
 
     @property
     def magnitude(self) -> float | None:
-        """Primary magnitude, or None when the catalog leaves it blank."""
+        """Primary magnitude, or None when the catalog leaves it blank.
+
+        Blank on 9,973 of 257,020 `h2023` records and 11,621 of 28,235
+        `h1919` records.
+        """
         ...
 
 
@@ -211,6 +234,19 @@ def magnitude_range(
     **Missing magnitude: excluded while this filter is active.** A record whose
     magnitude is `None` is rejected whenever `minimum` or `maximum` is given,
     and admitted when neither is. See `_passes_optional_range` for why.
+
+    **How much this drops.** Blank magnitude is common enough to change a
+    result materially, so the size of the effect is stated here rather than
+    only in the private helper. On `h1919` (1919-1950), `magnitude_range(
+    minimum=3.0)` returns 15,874 of 28,235 records; of the 12,361 rejected,
+    11,621 — **41.2 per cent of the corpus** — are rejected for carrying no
+    magnitude at all, not for being too small. On `h2023` the same field is
+    blank on 9,973 of 257,020 records (3.9 per cent). A caller who needs those
+    rows keeps them by not applying this filter.
+
+    This layer is pure predicates and deliberately does not count what it
+    drops; surfacing the count to the user is issue #20, at the usecase/CLI
+    layer.
     """
 
     def predicate(event: FilterableEvent) -> bool:
@@ -228,6 +264,12 @@ def depth_range(
 
     **Missing depth: excluded while this filter is active**, on the same
     reasoning as `magnitude_range`; see `_passes_optional_range`.
+
+    **How much this drops: nothing, on either corpus.** Unlike magnitude, the
+    depth field is never blank — 0 of 257,020 `h2023` records and 0 of 28,235
+    `h1919` records — so the exclusion rule is a guarantee about inputs this
+    filter has not yet met rather than an observed loss. It is enforced anyway
+    because the policy must not differ between the two optional measurements.
 
     Depth 0 km is a real value in the catalog (`h1919` line 1130, the 1923
     Kanto earthquake) and is never treated as absent.
@@ -254,13 +296,30 @@ class BoundingBox:
     east=-175` is the 10-degree band around the antimeridian, not the 350
     degrees the other way. This case is real rather than theoretical — `h2023`
     holds the Kermadec-Tonga-Fiji cluster on both sides of the line, 18 records
-    at negative longitudes down to -179.2 alongside SOUTH OF FIJI records at
-    +178 and +179 — and a box for it cannot be expressed with `west < east`.
+    at negative longitudes reaching -179.374 alongside SOUTH OF FIJI records
+    at +178 and +179 — and a box for it cannot be expressed with `west < east`.
     An implementation that assumed `west < east` would return an empty result
     for the western half and never say why.
 
     Latitude has no such wraparound, so `south > north` is always a caller
     mistake and is rejected.
+
+    **`west == east` is a zero-width meridian line, not the whole globe.** It
+    is neither crossing (that is strictly `west > east`) nor an error: the box
+    admits exactly the one longitude, and combined with a latitude span it
+    selects a segment of a meridian. This follows from the edges being
+    inclusive and is consistent with `south == north` selecting a parallel; a
+    caller wanting every longitude writes `west=-180, east=180`.
+
+    **At a non-crossing edge, +180 and -180 are different numbers.** They name
+    the same meridian, but `contains` compares the numbers it is given, so
+    `west=170, east=180` admits a record at +180.0 and rejects one at -180.0,
+    and `west=-180, east=-170` does the reverse. This is not hypothetical:
+    `h1919` holds one record at exactly 180.000 deg E (line 23516), which a
+    `west=-180, east=-170` box would miss. A box meant to hold the meridian
+    from either side must cross it — `west=170, east=-170` — rather than stop
+    on it. The full range `west=-180, east=180` admits both signs and is
+    unaffected.
 
     `description` is required and carries the provenance of the numbers, so
     that a hand-drawn box can never travel through the system anonymously.
@@ -382,10 +441,19 @@ def _dms(
 #: `ishikawa` gets *events in a box around Ishikawa*, which is a usefully
 #: narrower slice of 257,000 records but is not "events in Ishikawa
 #: prefecture". Measured on `h2023`, the box selects 31,954 of 257,020
-#: records; the JMA region names on those records show 21,813 NOTO PENINSULA
-#: REGION and 9,173 OFF NOTO PENINSULA as intended, but also 205 TOYAMA GIFU
-#: BORDER REG, 189 CENTRAL FUKUI PREF, 178 NORTHERN GIFU PREF and 94 TOYAMA
-#: PREF — about 2 per cent of the result lies outside the prefecture.
+#: records. Their JMA region names, in full:
+#:
+#:     21,813  NOTO PENINSULA REGION       144  TOYAMA BAY REGION
+#:      9,173  OFF NOTO PENINSULA          123  ISHIKAWA PREF
+#:        205  TOYAMA GIFU BORDER REG       94  TOYAMA PREF
+#:        189  CENTRAL FUKUI PREF           30  NW OFF HOKURIKU DISTRICT
+#:        178  NORTHERN GIFU PREF            5  FUKUI GIFU BORDER REGION
+#:
+#: 30,986 carry one of the two Noto names the box is aimed at; the remaining
+#: 968 — **about 3 per cent** — do not. Of those, 845 (2.6 per cent) name a
+#: region clearly outside the prefecture, and 123 name ISHIKAWA PREF itself.
+#: TOYAMA BAY REGION and NW OFF HOKURIKU DISTRICT are offshore regions the
+#: rectangle reaches into across the Sea of Japan.
 #:
 #: Anyone needing the real boundary needs a polygon dataset and a
 #: point-in-polygon test, which brings an authoritative source, a licence

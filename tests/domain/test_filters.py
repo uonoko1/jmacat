@@ -497,3 +497,61 @@ def test_dms_rejects_negative_minutes_or_seconds() -> None:
         _dms(30, -12, 41)
     with pytest.raises(FilterError):
         _dms(30, 12, -41)
+
+
+# --- documented box edge semantics ------------------------------------------
+
+
+def test_bounding_box_with_west_equal_to_east_is_a_zero_width_meridian() -> None:
+    """`west == east` is neither crossing nor an error: the edges are
+    inclusive, so the box admits exactly that one longitude and nothing else.
+    It is the longitude counterpart of `south == north` selecting a parallel.
+    """
+    meridian = BoundingBox(
+        south=36.0, north=38.0, west=137.0, east=137.0, description="Test meridian."
+    )
+    assert meridian.crosses_antimeridian is False
+    assert meridian.contains(37.0, 137.0) is True
+    assert meridian.contains(37.0, 137.000001) is False
+    assert meridian.contains(37.0, 136.999999) is False
+
+
+def test_a_non_crossing_box_ending_at_180_admits_only_the_positive_sign() -> None:
+    """+180 and -180 name the same meridian but are different numbers, and a
+    non-crossing box compares the numbers it is given.
+
+    `h1919` line 23516 is a real record at exactly 180.000 deg E, so the
+    distinction decides whether that record is found. A box meant to hold the
+    meridian from both sides must cross it (`west=170, east=-170`).
+    """
+    eastern = BoundingBox(
+        south=-90.0, north=90.0, west=170.0, east=180.0, description="Test box."
+    )
+    assert eastern.contains(-21.0, 180.0) is True
+    assert eastern.contains(-21.0, -180.0) is False
+
+    western = BoundingBox(
+        south=-90.0, north=90.0, west=-180.0, east=-170.0, description="Test box."
+    )
+    assert western.contains(-21.0, -180.0) is True
+    assert western.contains(-21.0, 180.0) is False
+
+    crossing = BoundingBox(
+        south=-90.0, north=90.0, west=170.0, east=-170.0, description="Test box."
+    )
+    assert crossing.contains(-21.0, 180.0) is True
+    assert crossing.contains(-21.0, -180.0) is True
+
+
+def test_time_range_with_no_bounds_still_rejects_a_naive_origin_time() -> None:
+    """The documented asymmetry with `magnitude_range` / `depth_range`: an
+    unbounded measurement filter asserts nothing and drops nothing, but an
+    unbounded `time_range()` still refuses a naive origin time, because that
+    is a defect in the event rather than a fact about it.
+    """
+    naive = event(origin_time=datetime(2023, 1, 1, 0, 8, 1, 500000))
+    with pytest.raises(NaiveDatetimeError):
+        time_range()(naive)
+
+    assert magnitude_range()(event(magnitude=None)) is True
+    assert depth_range()(event(depth_km=None)) is True
