@@ -8,6 +8,7 @@ and is skipped unless it is opted into explicitly.
 from __future__ import annotations
 
 import io
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,12 @@ from jmacat.infrastructure.jma_catalog_source import (
 from jmacat.infrastructure.transport import USER_AGENT, Response
 from jmacat.usecase.errors import CatalogRetrievalError, CatalogYearUnavailableError
 from jmacat.usecase.ports.contract import check_unavailable_year_fails_eagerly
-from tests.infrastructure.recorded_transport import FailingStream, RecordedTransport
+from tests.infrastructure.recorded_transport import (
+    DribblingStream,
+    FailingStream,
+    IncompleteReadStream,
+    RecordedTransport,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_ZIP = FIXTURES / "h1919_sample.zip"
@@ -497,3 +503,177 @@ class TestRequest:
         """
         assert "jmacat" in USER_AGENT
         assert "github.com/uonoko1/jmacat" in USER_AGENT
+
+
+class TestPartialReads:
+    """Streams that deliver fewer bytes per read than asked for.
+
+    A short read is legal and routine — `HTTPResponse` returns one at every
+    chunk boundary under chunked transfer-encoding — so it must never be
+    mistaken for a fault in the data.
+    """
+
+    def test_a_dribbling_stream_still_downloads_the_year(self, tmp_path: Path) -> None:
+        """The body is complete; only the read granularity is small.
+
+        Read four bytes at a time from a stream that yields two, and a naive
+        single `read(4)` sees b"PK", fails the magic-byte check, and reports a
+        *healthy* year as permanently unavailable — the non-retryable branch,
+        so the user is told to stop asking for a year that exists.
+        """
+        transport = RecordedTransport(
+            responses=[
+                Response(
+                    status=200,
+                    content_type="application/zip",
+                    stream=DribblingStream(SAMPLE_ZIP.read_bytes(), per_read=2),
+                )
+            ]
+        )
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=1
+        )
+
+        assert len(list(source.record_lines(1919))) == 12
+
+    def test_a_genuinely_empty_body_is_still_unavailable(self, tmp_path: Path) -> None:
+        """Guard against over-correcting: a stream that ends is not a short read."""
+        transport = RecordedTransport(status=200, body=b"", content_type="text/html")
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=1
+        )
+
+        with pytest.raises(CatalogYearUnavailableError):
+            source.record_lines(1919)
+
+
+class TestTruncatedTransfer:
+    def test_an_incomplete_read_is_a_retrieval_failure_not_a_crash(
+        self, tmp_path: Path
+    ) -> None:
+        """`IncompleteRead` is an HTTPException, not an OSError.
+
+        urllib raises it when a Content-Length is not satisfied — the ordinary
+        truncated download. Guarding only `OSError` lets it escape as a raw
+        non-port error, so the retry loop never sees it and the caller gets an
+        exception the port never promised.
+        """
+        body = SAMPLE_ZIP.read_bytes()
+        transport = RecordedTransport(
+            responses=[
+                Response(
+                    status=200,
+                    content_type="application/zip",
+                    stream=IncompleteReadStream(body, fail_after=len(body) // 2),
+                )
+            ]
+        )
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=1
+        )
+
+        with pytest.raises(CatalogRetrievalError):
+            source.record_lines(1919)
+
+    def test_an_incomplete_read_leaves_nothing_in_the_cache(
+        self, tmp_path: Path
+    ) -> None:
+        """Not even a temporary file: "never store a partial download" is absolute."""
+        body = SAMPLE_ZIP.read_bytes()
+        transport = RecordedTransport(
+            responses=[
+                Response(
+                    status=200,
+                    content_type="application/zip",
+                    stream=IncompleteReadStream(body, fail_after=len(body) // 2),
+                )
+            ]
+        )
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=1
+        )
+
+        with pytest.raises(CatalogRetrievalError):
+            source.record_lines(1919)
+
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestIterationDoesNotMaskCallerErrors:
+    def test_an_exception_from_the_consumer_is_not_reported_as_a_catalog_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """The caller's own bug must not be blamed on the cache.
+
+        The read loop's `except (BadZipFile, OSError)` sits around a `yield`,
+        so an exception raised in the *caller's* loop body re-enters there. If
+        it is caught, a caller whose own code raised OSError is told the JMA
+        archive is corrupt — and, being a retryable error, may loop on it.
+        """
+        source = JmaCatalogSource(cache_dir=tmp_path, transport=sample_transport())
+
+        lines = source.record_lines(1919)
+        next(lines)
+
+        # `throw` injects the exception at the yield, which is exactly how a
+        # real caller's failure re-enters a generator it is iterating.
+        assert isinstance(lines, Generator)
+        with pytest.raises(OSError, match="the consumer's own failure"):
+            lines.throw(OSError("the consumer's own failure"))
+
+
+class TestArchiveShapeIsResolvedEagerly:
+    def test_a_multi_member_archive_fails_at_the_call_not_at_first_next(
+        self, tmp_path: Path
+    ) -> None:
+        """Availability includes "is this archive usable at all?".
+
+        Deferring this to the first `next()` is the same failure mode the
+        eager-availability contract forbids: a caller's try/except around
+        `record_lines(...)` would not see it.
+        """
+        import io as _io
+        import zipfile as _zipfile
+
+        buffer = _io.BytesIO()
+        with _zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("h1919", b"J" + b"1" * 95 + b"\n")
+            archive.writestr("h1920", b"J" + b"2" * 95 + b"\n")
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=RecordedTransport(body=buffer.getvalue())
+        )
+
+        # No list(...) here: the raise must happen at the call itself.
+        with pytest.raises(CatalogRetrievalError, match="exactly one file"):
+            source.record_lines(1919)
+
+
+class TestHandleHygiene:
+    def test_an_abandoned_iterator_does_not_hold_the_archive_open(
+        self, tmp_path: Path
+    ) -> None:
+        """Closing a partially-consumed iterator must release its handles.
+
+        A caller that stops early — a `--limit`, a date filter past its window —
+        is explicitly supported by the port, so it must not cost a file
+        descriptor each time.
+        """
+        source = JmaCatalogSource(cache_dir=tmp_path, transport=sample_transport())
+        list(source.record_lines(1919))  # populate the cache
+
+        before = _open_file_count()
+        iterators = []
+        for _ in range(30):
+            iterator = source.record_lines(1919)
+            next(iterator)
+            iterators.append(iterator)
+        for iterator in iterators:
+            assert isinstance(iterator, Generator)
+            iterator.close()
+
+        assert _open_file_count() - before == 0
+
+
+def _open_file_count() -> int:
+    """How many file descriptors this process holds open."""
+    return len(list(Path("/proc/self/fd").iterdir()))

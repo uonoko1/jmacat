@@ -13,6 +13,7 @@ Verified against the live site on 2026-08-30:
 
 from __future__ import annotations
 
+import http.client
 import io
 import logging
 import os
@@ -42,6 +43,13 @@ ZIP_MAGIC: Final = b"PK\x03\x04"
 #: 64 KiB: large enough that a ~7 MB archive is a low four-figure number of
 #: reads, small enough that peak memory stays flat regardless of archive size.
 CHUNK_BYTES: Final = 64 * 1024
+
+#: Every way a transfer can fail mid-flight. `http.client.IncompleteRead` is
+#: listed explicitly because it is an `HTTPException`, *not* an `OSError` — it
+#: is what urllib raises when a Content-Length is not satisfied, i.e. the
+#: ordinary truncated download. Catching only `OSError` lets the single most
+#: likely truncation escape as a non-port error and strand a partial file.
+TRANSFER_FAILURES: Final = (OSError, http.client.HTTPException)
 
 DEFAULT_TIMEOUT_SECONDS: Final = 30.0
 
@@ -105,7 +113,7 @@ class JmaCatalogSource:
         enforces this, and the adapter's test suite runs it.
         """
         archive = self._ensure_cached(year)  # raises here, at the call site
-        return self._stream_lines(archive, year)
+        return self._open_lines(archive, year)
 
     # -- availability, resolved eagerly ------------------------------------
 
@@ -253,14 +261,35 @@ class JmaCatalogSource:
     def _read_exactly(
         self, body: IO[bytes], count: int, *, year: int, url: str
     ) -> bytes:
-        """Read `count` bytes, translating a transport failure mid-read."""
+        """Read up to `count` bytes, looping until they arrive or the body ends.
+
+        A single `read(count)` is *not* enough. Returning fewer bytes than
+        asked for is legal and routine — `HTTPResponse` does it at every chunk
+        boundary under chunked transfer-encoding — so a one-shot read can hand
+        back `b"PK"` from a perfectly healthy archive. That fails the
+        magic-byte check, and a real year is then reported as permanently
+        unavailable: the non-retryable branch, telling the user to stop asking
+        for a year that exists. Short reads are a property of the transport,
+        never evidence about publication.
+
+        Returns short only at a genuine end of body, which the caller is left
+        to judge — an empty or 2-byte body really is not an archive.
+        """
+        chunks: list[bytes] = []
+        remaining = count
         try:
-            return body.read(count)
-        except OSError as error:
+            while remaining > 0:
+                chunk = body.read(remaining)
+                if not chunk:  # end of body, not a short read
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except TRANSFER_FAILURES as error:
             raise CatalogRetrievalError(
                 f"The transfer of {url} for year {year} failed while reading "
                 f"the response: {error}"
             ) from error
+        return b"".join(chunks)
 
     def _write_atomically(
         self,
@@ -275,7 +304,7 @@ class JmaCatalogSource:
         The rename is what keeps the cache honest: a partial download is never
         visible under the cache path, so an interrupted run cannot leave behind
         a truncated file that a later run would mistake for a complete archive.
-        `os.replace` is atomic within a filesystem, and the temporary file is
+        `Path.replace` is atomic within a filesystem, and the temporary file is
         created in the cache directory so the rename never crosses one.
         """
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +319,7 @@ class JmaCatalogSource:
                 tmp_path = Path(tmp.name)
                 tmp.write(head)
                 shutil.copyfileobj(body, tmp, CHUNK_BYTES)
-        except OSError as error:
+        except TRANSFER_FAILURES as error:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
             raise CatalogRetrievalError(
@@ -322,38 +351,81 @@ class JmaCatalogSource:
         except (zipfile.BadZipFile, OSError):
             return False
 
-    def _stream_lines(self, archive_path: Path, year: int) -> Iterator[str]:
-        """Yield the archive's record lines, one at a time.
+    def _open_lines(self, archive_path: Path, year: int) -> Iterator[str]:
+        """Open the archive, validate its shape, and return a line generator.
 
-        Constant memory: `ZipFile.open` gives a decompressing stream, wrapped in
-        a `TextIOWrapper` that decodes and splits lines incrementally, so at no
-        point is more than a buffer plus one line held. The 25 MB expanded file
-        is never materialised.
+        Deliberately not a generator function, for the same reason
+        `record_lines` is not: opening the archive and finding its single
+        member are availability questions, and a `yield` here would defer them
+        to the caller's first `next()` — past any `try`/`except` around the
+        call site.
         """
         try:
-            with zipfile.ZipFile(archive_path) as archive:
-                member = self._single_member(archive, archive_path, year)
-                with archive.open(member) as raw:
-                    # The records are ASCII (docs/jma-hypocenter-format.md).
-                    # `errors="replace"` is chosen over the default `strict`:
-                    # a stray byte in one record must not abort a 257,000-line
-                    # run with an opaque UnicodeDecodeError. The replacement
-                    # character survives into the line, so the domain parser
-                    # rejects that one record loudly while the rest proceed.
-                    # `newline=""` leaves line splitting to the wrapper without
-                    # translating terminators, and the terminator is stripped
-                    # below as the port requires.
-                    text = io.TextIOWrapper(
-                        raw, encoding="ascii", errors="replace", newline=""
-                    )
-                    for line in text:
-                        yield line.rstrip("\r\n")
+            archive = zipfile.ZipFile(archive_path)
         except (zipfile.BadZipFile, OSError) as error:
-            raise CatalogRetrievalError(
-                f"The cached JMA archive for year {year} at {archive_path} "
-                f"could not be read: {error}. Delete it and re-run to download "
-                f"a fresh copy."
-            ) from error
+            raise self._unreadable(archive_path, year, error) from error
+
+        try:
+            member = self._single_member(archive, archive_path, year)
+            raw = archive.open(member)
+        except (zipfile.BadZipFile, OSError) as error:
+            archive.close()
+            raise self._unreadable(archive_path, year, error) from error
+        except BaseException:
+            archive.close()
+            raise
+
+        return self._iterate(archive, raw, archive_path, year)
+
+    def _iterate(
+        self,
+        archive: zipfile.ZipFile,
+        raw: IO[bytes],
+        archive_path: Path,
+        year: int,
+    ) -> Iterator[str]:
+        """Yield the member's lines, closing every handle on any exit.
+
+        The `try` wraps only the *reads*, never the `yield`. A `try` around the
+        yield would catch exceptions raised in the caller's own loop body —
+        they re-enter the generator at the yield point — and re-raise them as
+        "the cached JMA archive could not be read", blaming a healthy file for
+        the caller's bug and inviting a retry loop over it.
+
+        `finally` rather than `with`, so the handles are released whether the
+        archive is exhausted, the caller abandons the iterator (GeneratorExit
+        on close), or a read fails.
+        """
+        # The records are ASCII (docs/jma-hypocenter-format.md).
+        # `errors="replace"` is chosen over the default `strict`: a stray byte
+        # in one record must not abort a 257,000-line run with an opaque
+        # UnicodeDecodeError. The replacement character survives into the line,
+        # so the domain parser rejects that one record loudly while the rest
+        # proceed. `newline=""` leaves line splitting to the wrapper without
+        # translating terminators; the terminator is stripped below, as the
+        # port requires.
+        text = io.TextIOWrapper(raw, encoding="ascii", errors="replace", newline="")
+        try:
+            while True:
+                try:
+                    line = text.readline()
+                except (zipfile.BadZipFile, OSError) as error:
+                    raise self._unreadable(archive_path, year, error) from error
+                if not line:
+                    return
+                yield line.rstrip("\r\n")
+        finally:
+            text.close()  # closes `raw` too
+            archive.close()
+
+    def _unreadable(
+        self, archive_path: Path, year: int, error: Exception
+    ) -> CatalogRetrievalError:
+        return CatalogRetrievalError(
+            f"The cached JMA archive for year {year} at {archive_path} could "
+            f"not be read: {error}. Delete it and re-run to download a fresh "
+            f"copy."
+        )
 
     @staticmethod
     def _single_member(
