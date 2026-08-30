@@ -79,3 +79,43 @@ unit, a JMA quirk.
 This is a research and education preprocessing tool. It is not a substitute for
 official disaster information, and must not be used for evacuation decisions or
 real-time alerting. Prefer failing loudly over returning a value that might be wrong.
+
+## Two failure modes this project has already hit
+
+Both were found in review, not by the developer who wrote the code, and both
+passed every gate at the time. They are recorded here because the next instance
+will look just as green.
+
+### A test that passes for a reason unrelated to correctness
+
+Three examples from sprint 2:
+
+- A memory test asserting `peak < 200 MiB` passed with batching **disabled** — a
+  buffered year lands right at the threshold, so the assertion could never fail.
+  Fixed by comparing two runs that differ in one thing, and proving the comparison
+  fails under mutation.
+- A README-sync test compared units by substring, so changing `kilometres` to
+  `metres` — a hundredfold error — passed. `"metres"` is a substring of
+  `"kilometres"`.
+- A filter measurement used `minimum=3.0`, one of the few magnitudes where a float
+  bound happens to compare correctly. At `minimum=3.1` the same code silently drops
+  every record sitting exactly on the bound.
+
+Before trusting a test, mutate the thing it claims to check and watch it fail. An
+absolute threshold, a substring match, and a single sampled value are the three
+shapes most likely to hide this.
+
+### A type guessed rather than agreed
+
+`domain/` uses `Decimal` for coordinates, depth and magnitude, because a coordinate
+is degrees + minutes/100/60 and **6,666 of the 10,000 possible minute values** do
+not terminate in binary. `float` rounds the published value.
+
+While the parser was still being written, two other layers each independently
+guessed `float` for the same fields, and two reviews missed it because neither
+probed `Decimal` specifically. Nothing forced the types to meet until someone tried
+to compose them.
+
+When you build against a type that does not exist yet, write the conformance
+assignment first — `probe: TheProtocol = the_real_thing(...)` — even if it does not
+compile yet. A protocol nothing has ever been checked against is a guess.
