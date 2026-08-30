@@ -119,6 +119,40 @@ def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
     return sign * (whole + fraction / MINUTES_PER_DEGREE)
 
 
+NEGATIVE_MAGNITUDE_UNITS = {"-": 0, "A": 1, "B": 2, "C": 3}
+"""Leading character -> whole magnitude units to subtract (format doc).
+
+`-1`…`-9` are M-0.1…M-0.9, `A0`…`A9` M-1.0…M-1.9, `B*` M-2.x and `C*` M-3.x.
+`B` and `C` occur in neither corpus but are specified, so they are handled.
+"""
+
+
+def magnitude(raw: str) -> Decimal | None:
+    """Field 17 or 19 (`F2.1`) -> a signed magnitude.
+
+    Format doc, *Magnitude* and Traps 3: micro-earthquakes go below zero and
+    JMA writes the sign into the first character. `-6` is M-0.6, not M-6.0,
+    and `A0` is M-1.0, which `int(raw) / 10` cannot decode at all. Nearly one
+    in ten h2023 records carries a negative magnitude 1.
+
+    Two blanks mean no magnitude was determined, which returns `None` rather
+    than M0.0 (Traps 6).
+    """
+    if not raw.strip():
+        return None
+    head, tenths = raw[0], raw[1:]
+    if not tenths.isdigit():
+        raise FieldError("magnitude", "53-54/56-57", raw, "tenths digit is not a digit")
+    if head.isdigit():
+        return Decimal(f"{head}.{tenths}")
+    units = NEGATIVE_MAGNITUDE_UNITS.get(head)
+    if units is None:
+        raise FieldError(
+            "magnitude", "53-54/56-57", raw, f"unknown magnitude sign code {head!r}"
+        )
+    return -(Decimal(units) + Decimal(tenths) / 10)
+
+
 def depth_km(raw: str) -> Decimal | None:
     """Field 15 (c45-49) -> kilometres, honouring both of its encodings.
 

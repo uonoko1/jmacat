@@ -11,7 +11,12 @@ from decimal import Decimal
 
 import pytest
 
-from jmacat.domain.hypocenter import FieldError, decimal_degrees, depth_km
+from jmacat.domain.hypocenter import (
+    FieldError,
+    decimal_degrees,
+    depth_km,
+    magnitude,
+)
 
 
 def test_degrees_and_decimal_minutes_are_not_decimal_degrees() -> None:
@@ -212,3 +217,73 @@ def test_a_wholly_blank_depth_is_absent_rather_than_zero() -> None:
     an unknown depth into a sea-level one if a future year carries it.
     """
     assert depth_km("     ") is None
+
+
+def test_an_ordinary_magnitude_is_tenths() -> None:
+    """Format doc, Magnitude (`F2.1`) and Example A: `03` is M0.3."""
+    assert magnitude("03") == Decimal("0.3")
+
+
+def test_a_whole_magnitude_keeps_its_scale() -> None:
+    """Format doc, Example E (h2023 line 5901): `71` with type `B` is mb 7.1."""
+    assert magnitude("71") == Decimal("7.1")
+
+
+def test_a_negative_magnitude_stays_negative() -> None:
+    """Format doc, Example C (h2023 line 4, NE EHIME PREF): `-6` is M-0.6.
+
+    Not M-6.0: the `-` occupies the first character and the tenths digit the
+    second. A naive `int("-6") / 10` gives -0.6 here by luck, but see the `A0`
+    case below, which the same code cannot decode at all. 24,882 records in
+    h2023 - nearly one in ten - carry a negative magnitude 1.
+    """
+    assert magnitude("-6") == Decimal("-0.6")
+
+
+def test_the_letter_a_encodes_a_whole_negative_unit() -> None:
+    """Format doc, Magnitude and Example D (h2023, SW EHIME PREF): `A0` is M-1.0.
+
+    `A` = -1 whole unit, the second character the tenths. `int("A0")` raises.
+    64 records in h2023 carry `A0`.
+    """
+    assert magnitude("A0") == Decimal("-1.0")
+
+
+def test_the_letter_a_carries_its_tenths_digit() -> None:
+    """Format doc: `A1` … `A9` are M-1.1 … M-1.9. 12 records in h2023 are `A1`.
+
+    Distinguishes the whole-unit offset from the tenths: a decoder that read
+    `A` as a flat -1.0 would pass the `A0` case and fail here.
+    """
+    assert magnitude("A1") == Decimal("-1.1")
+
+
+def test_the_letters_b_and_c_encode_two_and_three_negative_units() -> None:
+    """Format doc, Magnitude: `B0` is M-2.0 and `C0` M-3.0.
+
+    Neither occurs in h2023 or h1919 (the doc lists them under Unresolved 6 as
+    documented but unobserved), so these expectations come from the
+    specification's own table rather than from a record.
+    """
+    assert magnitude("B0") == Decimal("-2.0")
+    assert magnitude("C9") == Decimal("-3.9")
+
+
+def test_a_blank_magnitude_is_absent_rather_than_zero() -> None:
+    """Format doc, Magnitude: two blanks mean no magnitude was determined.
+
+    9,973 records in h2023. M0.0 is a real, different statement from "not
+    determined", and Traps 6 forbids collapsing the two.
+    """
+    assert magnitude("  ") is None
+
+
+def test_an_undocumented_magnitude_letter_is_rejected() -> None:
+    """Only `-`, `A`, `B` and `C` are documented in the leading position.
+
+    Anything else is an unknown encoding, and CONTRIBUTING's "fail loudly"
+    rule prefers an error over a guess at what a future JMA code might mean.
+    """
+    with pytest.raises(FieldError) as caught:
+        magnitude("Z0")
+    assert caught.value.field == "magnitude"
