@@ -7,22 +7,26 @@ that returns something, a `close` that takes an argument — fails
 `uv run mypy` rather than surviving to a runtime `AttributeError` in an
 interactor.
 
-When issues #3/#4 land, `HypocenterEvent` satisfies `HypocenterEventLike`
-structurally and `EventWriter[HypocenterEvent]` becomes spellable at the use
-case boundary with no change to `infrastructure/`. If Dev-D's value object
-spells an attribute differently, mypy reports it *there*, naming the attribute,
-and the fix is one `extract` lambda in `event_schema.py`.
+When issues #3/#4 land, `domain.hypocenter.Hypocenter` satisfies
+`HypocenterEventLike` structurally and `EventWriter[Hypocenter]` becomes
+spellable at the use case boundary with no change to `infrastructure/`. The
+protocol now mirrors that dataclass attribute for attribute and type for type,
+so mypy checks the match at the composition site; an earlier revision described
+an event nobody was building, and because a Protocol is structural, nothing
+failed until the two were wired together.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from jmacat.infrastructure.csv_event_writer import CsvEventWriter
 from jmacat.infrastructure.event_protocol import HypocenterEventLike
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
 from jmacat.usecase.ports.event_writer import EventWriter
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 
 def test_the_csv_writer_is_an_event_writer(tmp_path: Path) -> None:
@@ -45,26 +49,22 @@ def test_a_sample_event_satisfies_the_event_protocol() -> None:
     `domain/` needs to know this protocol exists, or import anything from
     `infrastructure/` — which the dependency rule forbids anyway.
     """
-    from datetime import datetime, timedelta, timezone
-
     event: HypocenterEventLike = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=timezone(timedelta(hours=9))),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
     )
-    assert event.record_type == "J"
+    assert event.record_type.value == "J"
 
 
 def test_both_writers_work_through_the_port_type(tmp_path: Path) -> None:
     """A caller holding only the port can drive either adapter identically."""
-    from datetime import datetime, timedelta, timezone
-
     event = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=timezone(timedelta(hours=9))),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
     )
     writers: list[EventWriter[HypocenterEventLike]] = [
         CsvEventWriter(tmp_path / "out.csv"),

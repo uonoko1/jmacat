@@ -3,68 +3,102 @@
 Why this file exists
 --------------------
 
-The domain event value object is issues #3/#4 and is being written in parallel;
-it does not exist on `main`. `EventWriter` was designed for exactly this — it is
+The domain value object is issues #3/#4, developed on a parallel branch; it does
+not exist on this one. `EventWriter` was designed for exactly this — it is
 generic over a contravariant `EventT_contra` — so the port itself needs nothing.
 But an *adapter* must eventually read fields off the event to put them in
 columns, and it cannot do that against a bare TypeVar.
 
 Three ways to bridge the gap were available:
 
-* **Import the domain type.** Impossible today, and it would also invert the
-  useful direction of the coupling: the writers would be unusable until the
-  parser lands, and a test could no longer exercise them with a hand-built
-  event.
+* **Import the domain type.** Impossible on this branch, and it would also
+  invert the useful direction of the coupling: the writers would be unusable
+  until the parser lands, and a test could no longer exercise them with a
+  hand-built event.
 * **Take `Any` and read attributes.** Types check, and every misspelt attribute
   becomes an `AttributeError` at row 200,000 of a real run. That is precisely
   the silent-wrong-answer failure mode CONTRIBUTING rules out.
 * **A `Protocol`** — chosen. Protocols are *structural*: nothing needs to
-  inherit from `HypocenterEventLike`, and nothing needs to import it. When
-  Dev-D's `HypocenterEvent` lands with these attribute names, it satisfies this
-  protocol automatically, `ParquetEventWriter` is an
-  `EventWriter[HypocenterEvent]` with no edit here, and mypy checks the match at
-  the composition site rather than leaving it to a runtime crash.
+  inherit from `HypocenterEventLike`, and nothing needs to import it. Dev-D's
+  `Hypocenter` satisfies this protocol automatically, `ParquetEventWriter` is an
+  `EventWriter[Hypocenter]` with no edit here, and mypy checks the match at the
+  composition site rather than leaving it to a runtime crash.
 
-The one risk this carries is a *name* mismatch: if the domain type spells depth
-`depth_km_below_sea_level`, mypy reports it the moment the interactor wires the
-two together — loudly, at build time, naming the attribute. The fix is then a
-one-line change to the corresponding `extract` lambda in `event_schema.py`,
-because every attribute read in this package goes through that one table. No
-writer code reads an event attribute directly.
+This protocol describes `domain.hypocenter.Hypocenter` as that module actually
+defines it, attribute for attribute. It is deliberately a *mirror*, not a wish:
+an earlier revision of this file invented names and types the domain does not
+use, and because a Protocol is structural, nothing failed until the two were
+wired together. `domain/` is the inner layer and is authoritative; this file
+adapts to it and never the reverse.
 
 The protocol is deliberately **read-only** (`@property`, not bare annotations).
 A writer is a sink; it must never assign to the event it was handed, and a
 frozen dataclass — which is what a domain value object should be — satisfies
 read-only properties but not mutable attributes.
 
+Types
+-----
+
+Two of the domain's choices matter more to a writer than they look:
+
+* `record_type` is an **enum member**, not its `str` code. `str(RecordType.JMA)`
+  is the text `"RecordType.JMA"`, which CSV would happily write into the column
+  with no error at all. The writers therefore convert it explicitly, through
+  `.value`, rather than letting a `str()` fallback decide.
+* Coordinates, depth and magnitudes are **`Decimal`**, not `float`. The domain
+  is right to decode a fixed-point field exactly; the output schema declares
+  `double`, so the narrowing happens once, in `event_schema._as_double`, and
+  both formats therefore serialise the identical IEEE-754 value.
+
+Neither is something a writer may infer from the runtime type of whatever it is
+handed. `csv_event_writer._render` rejects any type it has no rule for.
+
 Units
 -----
 
 The units below are the *converted physical quantities* of issue #4, not the
 packed integers of the record. Decimal degrees, kilometres, seconds, signed
-magnitudes. An adapter converts nothing; conversion is domain work, and doing
-any of it here would put the highest-consequence arithmetic in the project
+magnitudes. An adapter converts no units; unit conversion is domain work, and
+doing any of it here would put the highest-consequence arithmetic in the project
 outside the layer that tests it.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
-class HypocenterEventLike(Protocol):
-    """A converted hypocenter event, as the output writers need to read it.
+class RecordTypeLike(Protocol):
+    """The enum `Hypocenter.record_type` carries: `J`, `U` or `I` in `.value`.
 
-    Every attribute typed `X | None` is genuinely optional in the catalog, and
-    `None` must reach the output as a null. `None` is never a stand-in for zero
-    (*Traps* 6 in `docs/jma-hypocenter-format.md`).
+    Structural, like the event protocol itself, so `domain.RecordType` satisfies
+    it without either module importing the other. Only `.value` is read — the
+    member *name* (`JMA`, `USGS`, `INTERNATIONAL`) is a Python identifier chosen
+    for readability, while `.value` is the code the record actually contains and
+    the one a researcher joins against.
     """
 
     @property
-    def record_type(self) -> str:
-        """`J` JMA, `U` USGS, `I` other international. Field 1."""
+    def value(self) -> str:
+        """The single-character record type code as published: `J`, `U`, `I`."""
+
+
+@runtime_checkable
+class HypocenterEventLike(Protocol):
+    """A decoded hypocenter, as the output writers need to read it.
+
+    Mirrors `domain.hypocenter.Hypocenter`. Every attribute typed `X | None` is
+    genuinely optional in the catalog, and `None` must reach the output as a
+    null. `None` is never a stand-in for zero (*Traps* 6 in
+    `docs/jma-hypocenter-format.md`).
+    """
+
+    @property
+    def record_type(self) -> RecordTypeLike:
+        """Who determined the hypocenter. `J` JMA, `U` USGS, `I` other. Field 1."""
 
     @property
     def origin_time(self) -> datetime:
@@ -79,75 +113,56 @@ class HypocenterEventLike(Protocol):
         """
 
     @property
-    def origin_time_error_s(self) -> float | None:
-        """Standard error of the origin time, in seconds. Field 8."""
+    def second_is_known(self) -> bool:
+        """False when the second field was blank: located only to the minute.
+
+        Carried into the output because `origin_time` must render *some*
+        second, so without this column a reader cannot tell an undetermined
+        second from a determined 00.00 s.
+        """
 
     @property
-    def latitude_deg(self) -> float:
+    def latitude(self) -> Decimal:
         """Decimal degrees, positive north. Fields 9-10, converted."""
 
     @property
-    def latitude_error_min(self) -> float | None:
-        """Standard error of latitude, in minutes of arc. Field 11."""
+    def latitude_minutes_are_known(self) -> bool:
+        """False when the minutes field was blank: whole-degree epicentre only.
+
+        Without it, a latitude of exactly 35 is indistinguishable from a
+        determination of 35 deg 00.00 min — an accuracy claim JMA did not make.
+        """
 
     @property
-    def longitude_deg(self) -> float:
+    def longitude(self) -> Decimal:
         """Decimal degrees, positive east. Fields 12-13, converted."""
 
     @property
-    def longitude_error_min(self) -> float | None:
-        """Standard error of longitude, in minutes of arc. Field 14."""
+    def longitude_minutes_are_known(self) -> bool:
+        """False when the minutes field was blank. See `latitude_minutes_are_known`."""
 
     @property
-    def depth_km(self) -> float | None:
+    def depth_km(self) -> Decimal | None:
         """Depth in kilometres, positive downward. Field 15, both encodings."""
 
     @property
-    def depth_error_km(self) -> float | None:
-        """Standard error of depth, in kilometres. Field 16."""
-
-    @property
-    def magnitude1(self) -> float | None:
+    def magnitude(self) -> Decimal | None:
         """Signed magnitude; negative values are real. Field 17."""
 
     @property
-    def magnitude1_type(self) -> str | None:
+    def magnitude_type(self) -> str | None:
         """Magnitude type code. Field 18."""
 
     @property
-    def magnitude2(self) -> float | None:
+    def magnitude_2(self) -> Decimal | None:
         """Signed second magnitude. Field 19."""
 
     @property
-    def magnitude2_type(self) -> str | None:
+    def magnitude_type_2(self) -> str | None:
         """Second magnitude type code. Field 20."""
 
     @property
-    def travel_time_table(self) -> str | None:
-        """Travel time table code. Field 21."""
-
-    @property
-    def location_precision(self) -> str | None:
-        """Hypocenter location precision code. Field 22."""
-
-    @property
-    def subsidiary_information(self) -> str | None:
-        """Subsidiary information code. Field 23."""
-
-    @property
-    def maximum_intensity(self) -> str | None:
-        """Maximum JMA shindo code. Field 24."""
-
-    @property
-    def damage_class(self) -> str | None:
-        """Utsu damage class code. Field 25."""
-
-    @property
-    def tsunami_class(self) -> str | None:
-        """Tsunami class code; its table depends on the year. Field 26."""
-
-    @property
-    def district_number(self) -> int | None:
+    def district(self) -> int | None:
         """JMA geographical district number. Field 27."""
 
     @property
@@ -161,7 +176,3 @@ class HypocenterEventLike(Protocol):
     @property
     def station_count(self) -> int | None:
         """Stations contributing to the determination. Field 30."""
-
-    @property
-    def determination_flag(self) -> str | None:
-        """Hypocenter determination flag code. Field 31."""
