@@ -27,11 +27,16 @@ from typing import Protocol
 from jmacat.usecase.errors import CatalogYearUnavailableError
 
 
-class PortContractViolation(AssertionError):
+class PortContractViolation(AssertionError):  # noqa: N818
     """An implementation satisfies a port's types but breaks its contract.
 
     Derives from `AssertionError` so a failure reads as a failed test rather than
     an error, in whatever runner an implementer happens to use.
+
+    N818 wants an `Error` suffix, which is right for the operational failures in
+    `jmacat.usecase.errors` but wrong here: the suffix would assert the opposite
+    of the base class. This is a failed assertion about an implementation, in the
+    same family as `AssertionError` itself, which carries no suffix either.
     """
 
 

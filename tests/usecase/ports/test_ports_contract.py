@@ -89,7 +89,10 @@ class TestCatalogSourceStreaming:
         assert source.lines_yielded == 2
 
     def test_an_empty_year_yields_no_lines_without_raising(self) -> None:
-        """A genuinely empty year is a legitimate result, distinct from a missing one."""
+        """A genuinely empty year is a legitimate result.
+
+        Distinct from a missing one, which raises.
+        """
         source: CatalogSource = InMemoryCatalogSource({2011: ()})
 
         assert list(source.record_lines(2011)) == []
