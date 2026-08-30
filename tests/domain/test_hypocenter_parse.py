@@ -69,10 +69,11 @@ HAIYUAN = (
     "W NEI MONGOL, CHINA         "
 )
 """h1919 line 383. The 1920 Haiyuan M8.3 - the only `I` record the format doc
-decodes. Note the doc's *Unresolved* item 1 quotes this line with a `9` in the
-district column; the file has c65 blank, and the quoted string is 4 bytes too
-long. The decoded values it gives (36.870 degN, 105.619 degE, 15 km, M8.3) are
-correct and are what this fixture asserts.
+decodes, at *Unresolved* item 1. This fixture is byte-identical to the line
+quoted there, and both are byte-identical to the file: an earlier revision of
+the doc quoted it with a spurious `9` in the district column and four bytes
+too many, which this PR corrects. The decoded values were never affected -
+36.870 degN, 105.619 degE, 15 km, M8.3 - and are what this fixture asserts.
 """
 
 
