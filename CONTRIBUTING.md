@@ -2,8 +2,10 @@
 
 ## Architecture: dependencies point inward
 
-    controller/  ->  usecase/  ->  domain/
-    infrastructure/  ->  usecase/ports/     (dependency inversion)
+    controller/  ->  infrastructure/  ->  usecase/  ->  domain/
+                 \------------------->  usecase/ports/   (dependency inversion)
+
+Every arrow points inward, and the exact rule is the matrix below.
 
 - `domain/` — the JMA record layout, coordinate/time/magnitude conversion, filter
   predicates. **Standard library only.** No pandas, pyarrow, typer, httpx.
@@ -13,12 +15,59 @@
 - `infrastructure/` — implements the ports: HTTP, ZIP, Parquet, CSV, cache.
 - `controller/` — the CLI. Thin: parse arguments, call an interactor, format output.
 
-`domain/` and `usecase/` must never import `infrastructure/` or `controller/`.
-A test enforces this by walking the AST; it is not a matter of discipline.
-
 Why: JMA can change its URL scheme or file layout at any time. Keeping that churn
 in `infrastructure/` leaves the scientifically sensitive conversion logic stable
 and testable without a network.
+
+### The dependency matrix
+
+The four layers are **totally ordered**, innermost first:
+
+    domain  <-  usecase  <-  infrastructure  <-  controller
+
+A module may import its own layer and anything **inward** of it. Importing
+outward is a violation.
+
+| may import →<br>layer ↓ | `domain/` | `usecase/` | `infrastructure/` | `controller/` | third-party |
+| --- | --- | --- | --- | --- | --- |
+| `domain/`         | yes | no  | no  | no  | **no** |
+| `usecase/`        | yes | yes | no  | no  | **no** |
+| `infrastructure/` | yes | yes | yes | no  | yes |
+| `controller/`     | yes | yes | yes | yes | yes |
+
+Two things about this table are worth stating explicitly, because both are
+choices rather than consequences of the picture above.
+
+**`controller/` may import `infrastructure/`.** Something has to choose a
+concrete `ParquetEventWriter` over a `CsvEventWriter` and hand it to an
+interactor, and in Clean Architecture that composition happens at the outermost
+layer. Routing the wiring through `usecase/` would mean the use case layer
+naming its own adapters, which is the dependency inversion pointing backwards.
+So the CLI is the composition root: it is the one place allowed to know every
+layer. This is why `infrastructure/` and `controller/` are ordered rather than
+treated as peer adapters.
+
+**`infrastructure/` may not import `controller/`.** There is no legitimate form
+of this. An adapter that reaches for the CLI cannot be exercised without it,
+and it makes the output format depend on the thing that chose the output
+format. This direction is the one issue #21 found unenforced.
+
+**`infrastructure/` and `controller/` may import `domain/` directly**, not only
+through `usecase/ports/`. An adapter that serialises a `Hypocenter` has to know
+what a `Hypocenter` is; forbidding it would only push the layer into
+re-declaring the domain's own types. (`infrastructure/event_protocol.py`
+mirrors the domain with a `Protocol` for a different reason — it was written on
+a branch where `domain/` did not exist yet — not because the import is barred.)
+
+**Only `domain/` and `usecase/` are standard-library-only.** That restriction is
+about keeping the conversion logic installable and testable with nothing
+present; it is not a statement about direction. `infrastructure/` needs pyarrow
+and `controller/` needs an argument parser, and both are expected to have them.
+
+`tests/test_architecture.py` enforces exactly this table by walking the AST of
+every module under `src/jmacat/`; it is not a matter of discipline. If you
+change the table, change the guard in the same commit — and add the violating
+case that proves the new rule can fail.
 
 ## TDD is mandatory
 
