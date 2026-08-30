@@ -87,35 +87,48 @@ tidier and silently moves the epicentre, so it is not used.
 
 | Column | Type | Unit | Null means |
 | --- | --- | --- | --- |
-| `record_type` | string | code | never null; the record type identifier is always present |
+| `record_type` | string | code: J=JMA, U=USGS, I=another international agency | never null; the record type identifier is always present |
 | `origin_time_utc` | timestamp[ms, tz=UTC] | UTC instant, millisecond precision | never null; every record carries an origin time |
 | `origin_time_jst` | timestamp[ms, tz=+09:00] | the same instant as origin_time_utc, expressed at UTC+09:00 | never null; the same instant as origin_time_utc |
-| `origin_time_second_error_s` | double | seconds | no standard error published: the hypocenter was fixed, or a Matched-filter template hypocenter was adopted (field 8) |
+| `second_is_known` | bool | true when the record determined the second; false when it located the event only to the minute | never null; false is a determination about the record, not a missing value |
 | `latitude_deg` | double | decimal degrees | never null; positive north, negative south |
-| `latitude_error_min` | double | minutes of arc | no standard error published (field 11) |
+| `latitude_minutes_are_known` | bool | true when the latitude was published to decimal minutes; false when only the whole degree was given | never null; false is a statement about the record's precision |
 | `longitude_deg` | double | decimal degrees | never null; positive east, negative west |
-| `longitude_error_min` | double | minutes of arc | no standard error published (field 14) |
+| `longitude_minutes_are_known` | bool | true when the longitude was published to decimal minutes; false when only the whole degree was given | never null; false is a statement about the record's precision |
 | `depth_km` | double | kilometres below the surface, positive downward | depth not determined. Never 0.0, which is a real and common shallow depth (*Traps* 6) |
-| `depth_error_km` | double | kilometres | no standard error published: blank unless the depth-free method was used (field 16) |
-| `magnitude1` | double | magnitude (dimensionless), on the scale named by magnitude1_type | no magnitude determined (9,973 records in h2023). Never 0.0: micro-earthquakes are routinely negative, so 0.0 is a plausible measured value and would not look wrong |
-| `magnitude1_type` | string | code: J=MJ, D=MD, d=MD 2 stations, V=MV, v=MV 2-3 stations, W=MW, B=mb, S=MS | undetermined; null on exactly the rows where magnitude1 is null |
-| `magnitude2` | double | magnitude (dimensionless), on the scale named by magnitude2_type | no second magnitude determined (blank on 256,259 of h2023) |
-| `magnitude2_type` | string | code; same table as magnitude1_type | undetermined |
-| `travel_time_table` | string | code 1-7; see *Travel time table codes* | determined by another agency (field 21) |
-| `location_precision` | string | code 1-9 or M; see *Location precision codes* | unknown (field 22) |
-| `subsidiary_information` | string | code: 1=natural, 2=insufficient JMA stations, 3=artificial, 4=eruption-related, 5=low-frequency event | blank for non-JMA determinations (field 23) |
-| `maximum_intensity` | string | JMA shindo code; 1-4 and 7 are the shindo, A/B are 5-lower/upper, C/D are 6-lower/upper. Kept as a code, not a number: the scale is ordinal and 5-lower has no numeric spelling | not felt, or no intensity assigned (field 24) |
-| `damage_class` | string | Utsu damage class code 1-7, X or Y | no damage recorded (field 25) |
-| `tsunami_class` | string | tsunami class code; the code table depends on the record's year (Utsu before 1989, Imamura-Iida from 1989) | no tsunami recorded (field 26) |
-| `district_number` | int32 | JMA geographical district 1-9 (Appendix 1.A.3) | not assigned (field 27) |
+| `magnitude` | double | magnitude (dimensionless), on the scale named by magnitude_type | no magnitude determined (9,973 records in h2023). Never 0.0: micro-earthquakes are routinely negative, so 0.0 is a plausible measured value and would not look wrong |
+| `magnitude_type` | string | code: J=MJ, D=MD, d=MD 2 stations, V=MV, v=MV 2-3 stations, W=MW, B=mb, S=MS | undetermined; null on exactly the rows where magnitude is null |
+| `magnitude_2` | double | magnitude (dimensionless), on the scale named by magnitude_type_2 | no second magnitude determined (blank on 256,259 of h2023) |
+| `magnitude_type_2` | string | code, on the same table as magnitude_type | undetermined |
+| `district` | int32 | JMA geographical district number (Appendix 1.A.3) | not assigned (field 27) |
 | `region_number` | int32 | JMA epicentre region within the district (Appendix 1.A.3) | not assigned (field 28) |
-| `region_name` | string | ASCII epicentre region name as published in the record | blank in the record (553 records in h1919). The name text is not byte-stable across years; key on district_number and region_number, not on this string |
+| `region_name` | string | ASCII epicentre region name as published in the record | blank in the record (553 records in h1919). The name text is not byte-stable across years; key on district and region_number, not on this string |
 | `station_count` | int32 | count of stations contributing to the determination | not published. Never 0, which would assert a determination made from no stations at all |
-| `determination_flag` | string | code; see *Determination flag codes* | blank for non-JMA determinations (field 31) |
 
 The `unit` and `null_meaning` of every column are also attached as Arrow field
 metadata, so a Parquet file passed on without this README still states what
 `depth_km` is measured in.
+
+#### Record fields not yet in the output
+
+The record has 31 fields; the parser decodes 16 of them, and the table above is
+exactly those. **Eleven fields are absent because nothing decodes them yet**,
+not because the catalog does not carry them:
+
+`origin_time_error_s`, `latitude_error_min`, `longitude_error_min`,
+`depth_error_km`, `travel_time_table`, `location_precision`,
+`subsidiary_information`, `maximum_intensity`, `damage_class`, `tsunami_class`
+and `determination_flag`.
+
+They are left out rather than emitted as always-null columns, because an
+always-null column *looks like data*: a reader who finds `maximum_intensity` in
+the schema and empty on every row would reasonably conclude that no event was
+ever felt. An absent column asks a question; an always-null one answers it
+wrongly.
+
+When the parser decodes them, adding them back is an **additive** schema
+change — new columns appended to the table — so nothing that reads the columns
+above by name or by position breaks.
 
 ## Partial output
 

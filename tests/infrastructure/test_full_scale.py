@@ -25,6 +25,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -32,7 +33,7 @@ import pytest
 
 from jmacat.infrastructure.csv_event_writer import CsvEventWriter
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 pytestmark = pytest.mark.slow
 
@@ -55,15 +56,19 @@ def year_of_events(count: int = FULL_YEAR) -> Iterator[SampleEvent]:
     start = datetime(2023, 1, 1, tzinfo=JST)
     for index in range(count):
         yield SampleEvent(
-            record_type="J",
+            record_type=RecordType.JMA,
             origin_time=start + timedelta(seconds=index * 2),
-            latitude_deg=30.0 + (index % 100_000) / 10_000,
-            longitude_deg=130.0 + (index % 150_000) / 10_000,
-            depth_km=None if index % 1_000 == 0 else 10.0 + (index % 500) / 10,
-            magnitude1=(
-                None if index < EVENTS_WITHOUT_MAGNITUDE else -0.6 + (index % 80) / 10
+            latitude=Decimal(30) + Decimal(index % 100_000) / 10_000,
+            longitude=Decimal(130) + Decimal(index % 150_000) / 10_000,
+            depth_km=(
+                None if index % 1_000 == 0 else Decimal(10) + Decimal(index % 500) / 10
             ),
-            magnitude1_type=None if index < EVENTS_WITHOUT_MAGNITUDE else "v",
+            magnitude=(
+                None
+                if index < EVENTS_WITHOUT_MAGNITUDE
+                else Decimal("-0.6") + Decimal(index % 80) / 10
+            ),
+            magnitude_type=None if index < EVENTS_WITHOUT_MAGNITUDE else "v",
             region_name="NEAR CHOSHI CITY",
             station_count=index % 40,
         )
@@ -147,8 +152,8 @@ def test_a_full_year_keeps_its_nulls_at_scale(tmp_path: Path) -> None:
     with ParquetEventWriter(path) as writer:
         writer.write_many(year_of_events())
 
-    table = pq.read_table(path, columns=["magnitude1", "depth_km"])
-    assert table.column("magnitude1").null_count == EVENTS_WITHOUT_MAGNITUDE
+    table = pq.read_table(path, columns=["magnitude", "depth_km"])
+    assert table.column("magnitude").null_count == EVENTS_WITHOUT_MAGNITUDE
     # depth is null on every thousandth event: indices 0, 1000, ... < 257,020.
     assert table.column("depth_km").null_count == 258
 

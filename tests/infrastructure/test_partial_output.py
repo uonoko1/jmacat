@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,7 @@ import pytest
 
 from jmacat.infrastructure.csv_event_writer import CsvEventWriter
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 if TYPE_CHECKING:
     from jmacat.infrastructure.event_protocol import HypocenterEventLike
@@ -36,12 +37,12 @@ class ConversionFailedError(Exception):
 
 def event(index: int) -> SampleEvent:
     return SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST) + timedelta(seconds=index),
-        latitude_deg=35.0 + index / 10_000,
-        longitude_deg=140.0 + index / 10_000,
-        depth_km=10.0,
-        magnitude1=1.0,
+        latitude=Decimal(35) + Decimal(index) / 10_000,
+        longitude=Decimal(140) + Decimal(index) / 10_000,
+        depth_km=Decimal("10.0"),
+        magnitude=Decimal("1.0"),
     )
 
 

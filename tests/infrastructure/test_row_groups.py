@@ -15,24 +15,25 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 JST = timezone(timedelta(hours=9), "JST")
 
 
 def event(index: int) -> SampleEvent:
     return SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST) + timedelta(seconds=index),
-        latitude_deg=35.0 + index / 100_000,
-        longitude_deg=140.0 + index / 100_000,
-        depth_km=10.0,
-        magnitude1=1.0,
+        latitude=Decimal(35) + Decimal(index) / 100_000,
+        longitude=Decimal(140) + Decimal(index) / 100_000,
+        depth_km=Decimal("10.0"),
+        magnitude=Decimal("1.0"),
     )
 
 
@@ -92,7 +93,7 @@ def test_writing_no_events_produces_a_valid_empty_file(tmp_path: Path) -> None:
 
     table = pq.read_table(path)
     assert table.num_rows == 0
-    assert len(table.schema) == 25
+    assert len(table.schema) == 17
 
 
 def test_the_batch_size_bounds_what_is_held_in_memory(tmp_path: Path) -> None:

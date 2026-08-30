@@ -7,6 +7,7 @@ Numeric expectations come from records quoted in
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ import pytest
 
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
 from jmacat.usecase.errors import EventWriterError
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 JST = timezone(timedelta(hours=9), "JST")
 
@@ -28,24 +29,17 @@ def example_a() -> SampleEvent:
     2023-01-01 00:08:01.50 JST, 35.676500 degN, 140.654500 degE, 50 km, M0.3.
     """  # noqa: E501
     return SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, 0, 8, 1, 500_000, tzinfo=JST),
-        origin_time_error_s=0.12,
-        latitude_deg=35.676500,
-        latitude_error_min=1.00,
-        longitude_deg=140.654500,
-        longitude_error_min=1.36,
-        depth_km=50.0,
-        magnitude1=0.3,
-        magnitude1_type="v",
-        travel_time_table="7",
-        location_precision="2",
-        subsidiary_information="1",
-        district_number=3,
+        latitude=Decimal("35.676500"),
+        longitude=Decimal("140.654500"),
+        depth_km=Decimal("50.0"),
+        magnitude=Decimal("0.3"),
+        magnitude_type="v",
+        district=3,
         region_number=110,
         region_name="NEAR CHOSHI CITY",
         station_count=9,
-        determination_flag="A",
     )
 
 
@@ -67,13 +61,12 @@ def test_an_event_round_trips_through_parquet(tmp_path: Path) -> None:
     assert row["latitude_deg"] == 35.676500
     assert row["longitude_deg"] == 140.654500
     assert row["depth_km"] == 50.0
-    assert row["magnitude1"] == pytest.approx(0.3)
-    assert row["magnitude1_type"] == "v"
+    assert row["magnitude"] == pytest.approx(0.3)
+    assert row["magnitude_type"] == "v"
     assert row["region_name"] == "NEAR CHOSHI CITY"
     assert row["station_count"] == 9
-    assert row["district_number"] == 3
+    assert row["district"] == 3
     assert row["region_number"] == 110
-    assert row["determination_flag"] == "A"
 
 
 def test_a_coordinate_is_stored_as_float64_and_is_bit_identical(
@@ -81,23 +74,27 @@ def test_a_coordinate_is_stored_as_float64_and_is_bit_identical(
 ) -> None:
     """Example B: 142 deg 55.91 min has no exact decimal, so no rounding is safe."""
     path = tmp_path / "out.parquet"
-    longitude = 142 + 55.91 / 60
-    latitude = 41 + 10.23 / 60
+    # As the domain decodes them: exact decimal degrees, arbitrary precision.
+    longitude = 142 + Decimal("55.91") / 60
+    latitude = 41 + Decimal("10.23") / 60
     with ParquetEventWriter(path) as writer:
         writer.write(
             SampleEvent(
-                record_type="J",
+                record_type=RecordType.JMA,
                 origin_time=datetime(2023, 1, 1, tzinfo=JST),
-                latitude_deg=latitude,
-                longitude_deg=longitude,
+                latitude=latitude,
+                longitude=longitude,
             )
         )
 
     table = pq.read_table(path)
     assert str(table.schema.field("latitude_deg").type) == "double"
     (row,) = table.to_pylist()
-    assert row["longitude_deg"] == longitude
-    assert row["latitude_deg"] == latitude
+    # The stored value is the nearest double to the exact decimal, which is
+    # what declaring the column `double` means. `float(Decimal)` is correctly
+    # rounded, so this is an equality and not an approximation.
+    assert row["longitude_deg"] == float(longitude)
+    assert row["latitude_deg"] == float(latitude)
 
 
 def test_both_timestamp_columns_are_typed_with_their_time_zone(
@@ -149,21 +146,21 @@ def test_a_missing_value_is_null_and_not_zero(tmp_path: Path) -> None:
     """
     path = tmp_path / "out.parquet"
     absent = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
         depth_km=None,
-        magnitude1=None,
+        magnitude=None,
         station_count=None,
     )
     measured_zero = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
-        depth_km=0.0,
-        magnitude1=0.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
+        depth_km=Decimal("0.0"),
+        magnitude=Decimal("0.0"),
         station_count=0,
     )
     with ParquetEventWriter(path) as writer:
@@ -171,10 +168,10 @@ def test_a_missing_value_is_null_and_not_zero(tmp_path: Path) -> None:
 
     missing, zero = read_rows(path)
     assert missing["depth_km"] is None
-    assert missing["magnitude1"] is None
+    assert missing["magnitude"] is None
     assert missing["station_count"] is None
     assert zero["depth_km"] == 0.0
-    assert zero["magnitude1"] == 0.0
+    assert zero["magnitude"] == 0.0
     assert zero["station_count"] == 0
 
 
@@ -185,17 +182,17 @@ def test_a_null_string_stays_distinct_from_an_empty_string(tmp_path: Path) -> No
         writer.write_many(
             [
                 SampleEvent(
-                    record_type="J",
+                    record_type=RecordType.JMA,
                     origin_time=datetime(2023, 1, 1, tzinfo=JST),
-                    latitude_deg=35.0,
-                    longitude_deg=140.0,
+                    latitude=Decimal("35.0"),
+                    longitude=Decimal("140.0"),
                     region_name=None,
                 ),
                 SampleEvent(
-                    record_type="J",
+                    record_type=RecordType.JMA,
                     origin_time=datetime(2023, 1, 1, tzinfo=JST),
-                    latitude_deg=35.0,
-                    longitude_deg=140.0,
+                    latitude=Decimal("35.0"),
+                    longitude=Decimal("140.0"),
                     region_name="",
                 ),
             ]
@@ -212,35 +209,35 @@ def test_a_negative_magnitude_survives(tmp_path: Path) -> None:
     with ParquetEventWriter(path) as writer:
         writer.write(
             SampleEvent(
-                record_type="J",
+                record_type=RecordType.JMA,
                 origin_time=datetime(2023, 1, 1, tzinfo=JST),
-                latitude_deg=34.0,
-                longitude_deg=133.0,
-                magnitude1=-0.6,
+                latitude=Decimal("34.0"),
+                longitude=Decimal("133.0"),
+                magnitude=Decimal("-0.6"),
             )
         )
 
     (row,) = read_rows(path)
-    assert row["magnitude1"] == pytest.approx(-0.6)
-    assert row["magnitude1"] < 0
+    assert row["magnitude"] == pytest.approx(-0.6)
+    assert row["magnitude"] < 0
 
 
 def test_a_southern_latitude_stays_negative(tmp_path: Path) -> None:
     """The `U` record of issue #3: `- 70352` is about -7.0587 deg, not +7."""
     path = tmp_path / "out.parquet"
-    latitude = -(7 + 3.52 / 60)
+    latitude = -(7 + Decimal("3.52") / 60)
     with ParquetEventWriter(path) as writer:
         writer.write(
             SampleEvent(
-                record_type="U",
+                record_type=RecordType.USGS,
                 origin_time=datetime(2023, 1, 10, 2, 47, 35, 40_000, tzinfo=JST),
-                latitude_deg=latitude,
-                longitude_deg=130 + 0.54 / 60,
+                latitude=latitude,
+                longitude=130 + Decimal("0.54") / 60,
             )
         )
 
     (row,) = read_rows(path)
-    assert row["latitude_deg"] == latitude
+    assert row["latitude_deg"] == float(latitude)
     assert row["latitude_deg"] < 0
 
 
@@ -260,10 +257,10 @@ def test_close_is_idempotent(tmp_path: Path) -> None:
 def test_a_naive_origin_time_is_rejected(tmp_path: Path) -> None:
     """The writer never guesses a zone; see docs *Time zone — JST, not UTC*."""
     naive = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, 0, 8, 1),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
     )
     with pytest.raises(EventWriterError, match="origin_time"):
         with ParquetEventWriter(tmp_path / "out.parquet") as writer:

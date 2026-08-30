@@ -17,28 +17,20 @@ def test_the_schema_is_a_fixed_ordered_list_of_columns() -> None:
         "record_type",
         "origin_time_utc",
         "origin_time_jst",
-        "origin_time_second_error_s",
+        "second_is_known",
         "latitude_deg",
-        "latitude_error_min",
+        "latitude_minutes_are_known",
         "longitude_deg",
-        "longitude_error_min",
+        "longitude_minutes_are_known",
         "depth_km",
-        "depth_error_km",
-        "magnitude1",
-        "magnitude1_type",
-        "magnitude2",
-        "magnitude2_type",
-        "travel_time_table",
-        "location_precision",
-        "subsidiary_information",
-        "maximum_intensity",
-        "damage_class",
-        "tsunami_class",
-        "district_number",
+        "magnitude",
+        "magnitude_type",
+        "magnitude_2",
+        "magnitude_type_2",
+        "district",
         "region_number",
         "region_name",
         "station_count",
-        "determination_flag",
     ]
 
 
@@ -62,3 +54,29 @@ def test_both_origin_time_columns_carry_an_explicit_time_zone() -> None:
     by_name = {column.name: column for column in COLUMNS}
     assert by_name["origin_time_utc"].arrow_type_name == "timestamp[ms, tz=UTC]"
     assert by_name["origin_time_jst"].arrow_type_name == "timestamp[ms, tz=+09:00]"
+
+
+def test_the_schema_exposes_only_fields_the_parser_decodes() -> None:
+    """No column is always null, and the count is pinned so it cannot creep.
+
+    An always-null column is worse than an absent one: a reader sees
+    `maximum_intensity` in the schema, finds it empty on every row, and
+    concludes no event was ever felt. The eleven undecoded record fields are
+    therefore absent rather than declared, and their eventual return is an
+    additive change — a new column at the end of the table.
+    """
+    assert len(COLUMNS) == 17
+    undecoded = {
+        "origin_time_error_s",
+        "latitude_error_min",
+        "longitude_error_min",
+        "depth_error_km",
+        "travel_time_table",
+        "location_precision",
+        "subsidiary_information",
+        "maximum_intensity",
+        "damage_class",
+        "tsunami_class",
+        "determination_flag",
+    }
+    assert undecoded.isdisjoint(column_names())

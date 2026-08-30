@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import csv
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from jmacat.infrastructure.csv_event_writer import CsvEventWriter
 from jmacat.infrastructure.event_schema import column_names
-from tests.infrastructure.events import SampleEvent
+from tests.infrastructure.events import RecordType, SampleEvent
 
 JST = timezone(timedelta(hours=9), "JST")
 
@@ -25,24 +26,17 @@ def example_a() -> SampleEvent:
     2023-01-01 00:08:01.50 JST, 35.676500 degN, 140.654500 degE, 50 km, M0.3.
     """  # noqa: E501
     return SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, 0, 8, 1, 500_000, tzinfo=JST),
-        origin_time_error_s=0.12,
-        latitude_deg=35.676500,
-        latitude_error_min=1.00,
-        longitude_deg=140.654500,
-        longitude_error_min=1.36,
-        depth_km=50.0,
-        magnitude1=0.3,
-        magnitude1_type="v",
-        travel_time_table="7",
-        location_precision="2",
-        subsidiary_information="1",
-        district_number=3,
+        latitude=Decimal("35.676500"),
+        longitude=Decimal("140.654500"),
+        depth_km=Decimal("50.0"),
+        magnitude=Decimal("0.3"),
+        magnitude_type="v",
+        district=3,
         region_number=110,
         region_name="NEAR CHOSHI CITY",
         station_count=9,
-        determination_flag="A",
     )
 
 
@@ -72,7 +66,7 @@ def test_an_event_round_trips_through_csv(tmp_path: Path) -> None:
     assert float(row["latitude_deg"]) == 35.676500
     assert float(row["longitude_deg"]) == 140.654500
     assert float(row["depth_km"]) == 50.0
-    assert float(row["magnitude1"]) == 0.3
+    assert float(row["magnitude"]) == 0.3
     assert row["region_name"] == "NEAR CHOSHI CITY"
     assert int(row["station_count"]) == 9
 
@@ -100,26 +94,26 @@ def test_a_missing_magnitude_is_empty_and_not_zero(tmp_path: Path) -> None:
     """
     path = tmp_path / "out.csv"
     absent = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
-        magnitude1=None,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
+        magnitude=None,
     )
     measured_zero = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
-        magnitude1=0.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
+        magnitude=Decimal("0.0"),
     )
     with CsvEventWriter(path) as writer:
         writer.write_many([absent, measured_zero])
 
     missing, zero = read_rows(path)
-    assert missing["magnitude1"] == ""
-    assert zero["magnitude1"] == "0.0"
-    assert missing["magnitude1"] != zero["magnitude1"]
+    assert missing["magnitude"] == ""
+    assert zero["magnitude"] == "0.0"
+    assert missing["magnitude"] != zero["magnitude"]
 
 
 def test_an_empty_string_and_a_null_both_become_an_empty_csv_field(
@@ -139,17 +133,17 @@ def test_an_empty_string_and_a_null_both_become_an_empty_csv_field(
     """
     path = tmp_path / "out.csv"
     null_name = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
         region_name=None,
     )
     empty_name = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, tzinfo=JST),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
         region_name="",
     )
     with CsvEventWriter(path) as writer:
@@ -175,22 +169,22 @@ def test_a_coordinate_keeps_full_double_precision(tmp_path: Path) -> None:
     """
     path = tmp_path / "out.csv"
     # Example B: J2023010100102271 ... 41 deg 10.23 min, 142 deg 55.91 min.
-    longitude = 142 + 55.91 / 60
-    latitude = 41 + 10.23 / 60
+    longitude = 142 + Decimal("55.91") / 60
+    latitude = 41 + Decimal("10.23") / 60
     with CsvEventWriter(path) as writer:
         writer.write(
             SampleEvent(
-                record_type="J",
+                record_type=RecordType.JMA,
                 origin_time=datetime(2023, 1, 1, tzinfo=JST),
-                latitude_deg=latitude,
-                longitude_deg=longitude,
-                depth_km=26.45,
+                latitude=latitude,
+                longitude=longitude,
+                depth_km=Decimal("26.45"),
             )
         )
 
     (row,) = read_rows(path)
-    assert float(row["longitude_deg"]) == longitude
-    assert float(row["latitude_deg"]) == latitude
+    assert float(row["longitude_deg"]) == float(longitude)
+    assert float(row["latitude_deg"]) == float(latitude)
 
 
 def test_writing_after_close_raises(tmp_path: Path) -> None:
@@ -217,10 +211,10 @@ def test_a_naive_origin_time_is_rejected(tmp_path: Path) -> None:
 
     path = tmp_path / "out.csv"
     naive = SampleEvent(
-        record_type="J",
+        record_type=RecordType.JMA,
         origin_time=datetime(2023, 1, 1, 0, 8, 1),
-        latitude_deg=35.0,
-        longitude_deg=140.0,
+        latitude=Decimal("35.0"),
+        longitude=Decimal("140.0"),
     )
     try:
         with CsvEventWriter(path) as writer:
@@ -243,10 +237,10 @@ def test_an_event_whose_origin_time_is_already_utc_is_written_correctly(
     with CsvEventWriter(path) as writer:
         writer.write(
             SampleEvent(
-                record_type="U",
+                record_type=RecordType.USGS,
                 origin_time=datetime(2023, 2, 6, 1, 17, 34, 340_000, tzinfo=UTC),
-                latitude_deg=37.174,
-                longitude_deg=37.032,
+                latitude=Decimal("37.174"),
+                longitude=Decimal("37.032"),
             )
         )
 
