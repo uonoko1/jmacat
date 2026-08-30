@@ -7,7 +7,11 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from jmacat.domain.filters import NaiveDatetimeError, time_range
+from jmacat.domain.filters import (
+    NaiveDatetimeError,
+    magnitude_range,
+    time_range,
+)
 
 JST = timezone(timedelta(hours=9), "JST")
 
@@ -111,3 +115,55 @@ def test_time_range_rejects_an_event_whose_origin_time_is_naive() -> None:
     predicate = time_range(start=datetime(2023, 1, 1, 0, 0, tzinfo=JST))
     with pytest.raises(NaiveDatetimeError):
         predicate(event(origin_time=datetime(2023, 6, 1, 0, 0)))
+
+
+def test_magnitude_range_admits_an_event_inside_the_range() -> None:
+    predicate = magnitude_range(minimum=3.0, maximum=7.0)
+    assert predicate(event(magnitude=6.5)) is True
+
+
+def test_magnitude_range_rejects_an_event_below_the_range() -> None:
+    predicate = magnitude_range(minimum=3.0)
+    assert predicate(event(magnitude=0.3)) is False
+
+
+def test_magnitude_range_rejects_an_event_above_the_range() -> None:
+    predicate = magnitude_range(maximum=3.0)
+    assert predicate(event(magnitude=6.5)) is False
+
+
+def test_magnitude_range_is_inclusive_of_both_boundaries() -> None:
+    """ "M3.0 and above" must admit an M3.0 record; the range is closed."""
+    assert magnitude_range(minimum=3.0)(event(magnitude=3.0)) is True
+    assert magnitude_range(maximum=3.0)(event(magnitude=3.0)) is True
+
+
+def test_magnitude_range_admits_a_negative_magnitude_in_range() -> None:
+    """The catalog really does hold negative magnitudes: `h2023` carries
+    M-0.6 (example C in docs/jma-hypocenter-format.md) and M-1.0 (example D).
+    """
+    assert magnitude_range(minimum=-1.0, maximum=0.0)(event(magnitude=-0.6)) is True
+
+
+def test_magnitude_range_excludes_an_event_with_no_magnitude() -> None:
+    """Policy: an active magnitude filter excludes a record whose magnitude is
+    unknown. 9,973 of 257,020 `h2023` records and 11,621 of 28,235 `h1919`
+    records have a blank magnitude field, so this is not a corner case.
+    """
+    predicate = magnitude_range(minimum=3.0)
+    assert predicate(event(magnitude=None)) is False
+
+
+def test_magnitude_range_excludes_a_missing_magnitude_for_an_upper_bound_too() -> None:
+    """The policy is about the filter being active, not about which side is
+    bounded: an unknown magnitude cannot be shown to be below a maximum either.
+    """
+    predicate = magnitude_range(maximum=3.0)
+    assert predicate(event(magnitude=None)) is False
+
+
+def test_magnitude_range_with_no_bounds_admits_a_missing_magnitude() -> None:
+    """An unbounded magnitude filter is not an active filter, so it asserts
+    nothing about the magnitude and must not drop records.
+    """
+    assert magnitude_range()(event(magnitude=None)) is True

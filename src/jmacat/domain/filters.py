@@ -24,10 +24,43 @@ class NaiveDatetimeError(FilterError):
 
 
 class FilterableEvent(Protocol):
-    """The attributes a filter reads off an event."""
+    """The attributes a filter reads off an event.
+
+    A structural type, not a base class. The concrete hypocenter value object
+    (issues #3/#4) is built in parallel with these filters; naming only the
+    five attributes a filter actually needs lets the two meet without either
+    importing the other, and lets a test stub or a future record type satisfy
+    the filters without inheriting anything.
+
+    `depth_km` and `magnitude` are optional because the catalog leaves them
+    blank: 9,973 of 257,020 `h2023` records carry no magnitude. See
+    `docs/jma-hypocenter-format.md` for the field-level blanking rules.
+    """
 
     @property
-    def origin_time(self) -> datetime: ...
+    def origin_time(self) -> datetime:
+        """Origin time. Timezone-aware; JMA publishes JST (UTC+9)."""
+        ...
+
+    @property
+    def latitude(self) -> float:
+        """Signed decimal degrees, north positive."""
+        ...
+
+    @property
+    def longitude(self) -> float:
+        """Signed decimal degrees, east positive, in [-180, 180]."""
+        ...
+
+    @property
+    def depth_km(self) -> float | None:
+        """Depth in kilometres, or None when the catalog leaves it blank."""
+        ...
+
+    @property
+    def magnitude(self) -> float | None:
+        """Primary magnitude, or None when the catalog leaves it blank."""
+        ...
 
 
 def _require_aware(value: datetime | None, *, name: str) -> None:
@@ -42,6 +75,48 @@ def _require_aware(value: datetime | None, *, name: str) -> None:
             f"{name} must be timezone-aware; JMA origin times are JST (UTC+9), "
             f"so a naive bound would shift the window silently. Got {value!r}."
         )
+
+
+def _passes_optional_range(
+    value: float | None,
+    *,
+    minimum: float | None,
+    maximum: float | None,
+) -> bool:
+    """Test an optional measurement against an inclusive range.
+
+    **The missing-value policy lives here, once, for both magnitude and depth:
+    an unknown value fails an active range and passes an inactive one.**
+
+    The reasoning, since either answer type checks and the choice silently
+    changes a scientific result. A range filter is a claim *about* the value —
+    "this record's magnitude is at least 3.0". A record with no magnitude
+    supports no such claim, so admitting it would put records into an "M3.0+"
+    result set that are not known to be M3.0+, and a user counting that set
+    would over-count. The blank field is common enough for that to matter:
+    9,973 of 257,020 `h2023` records and 11,621 of 28,235 `h1919` records carry
+    no magnitude, so the wrong policy would silently distort a 1919-1950 study
+    by 41 per cent of its rows.
+
+    The opposite failure — dropping records the user wanted — is the one the
+    user can see and correct, because a record absent from the output is
+    recoverable by widening or dropping the filter, whereas a record wrongly
+    present is indistinguishable from a real one. CONTRIBUTING's "prefer
+    failing loudly over returning a value that might be wrong" points the same
+    way. A caller who wants the unknowns keeps them by not applying the filter,
+    or by applying it to the subset that has the value.
+
+    When neither bound is given the filter asserts nothing, so it must not drop
+    anything; that is why the `None` value is admitted in that case rather than
+    rejected outright.
+    """
+    if minimum is None and maximum is None:
+        return True
+    if value is None:
+        return False
+    if minimum is not None and value < minimum:
+        return False
+    return not (maximum is not None and value > maximum)
 
 
 def time_range(
@@ -65,5 +140,25 @@ def time_range(
         if start is not None and origin < start:
             return False
         return not (end is not None and origin > end)
+
+    return predicate
+
+
+def magnitude_range(
+    *, minimum: float | None = None, maximum: float | None = None
+) -> Callable[[FilterableEvent], bool]:
+    """Accept events whose magnitude lies in the closed interval.
+
+    Both bounds are **inclusive**: `minimum=3.0` admits an M3.0 record, which
+    is what a user asking for "M3.0 and above" means. Either may be `None`,
+    leaving that side unbounded.
+
+    **Missing magnitude: excluded while this filter is active.** A record whose
+    magnitude is `None` is rejected whenever `minimum` or `maximum` is given,
+    and admitted when neither is. See `_passes_optional_range` for why.
+    """
+
+    def predicate(event: FilterableEvent) -> bool:
+        return _passes_optional_range(event.magnitude, minimum=minimum, maximum=maximum)
 
     return predicate
