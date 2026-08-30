@@ -7,6 +7,7 @@ verbatim record in the published catalog, which is not committed here.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -16,6 +17,7 @@ from jmacat.domain.hypocenter import (
     decimal_degrees,
     depth_km,
     magnitude,
+    origin_time,
 )
 
 
@@ -287,3 +289,92 @@ def test_an_undocumented_magnitude_letter_is_rejected() -> None:
     with pytest.raises(FieldError) as caught:
         magnitude("Z0")
     assert caught.value.field == "magnitude"
+
+
+def test_the_origin_time_is_returned_in_japan_standard_time() -> None:
+    """Format doc, *Time zone*: origin times are JST (UTC+9), not UTC.
+
+    JMA states this only on the English layout table, in the Year field:
+    "Year of origin time (Japan Standard Time = UTC + 9 h; the same applies
+    below.)". The Japanese table does not mention a time zone at all. A naive
+    datetime would let a caller compare it against a UTC catalog and be nine
+    hours out with nothing raised, so the offset is carried explicitly.
+
+    Fields from Example A (h2023 line 1): 2023-01-01 00:08 with seconds `0150`.
+    """
+    when = origin_time("2023", "01", "01", "00", "08", "0150")
+    assert when == datetime(
+        2023, 1, 1, 0, 8, 1, 500000, tzinfo=timezone(timedelta(hours=9))
+    )
+
+
+def test_the_returned_datetime_is_never_naive() -> None:
+    """Issue #4: state the time zone in code, do not leave it implicit."""
+    when = origin_time("2023", "01", "01", "00", "08", "0150")
+    assert when is not None
+    assert when.utcoffset() == timedelta(hours=9)
+
+
+def test_subtracting_nine_hours_reproduces_the_external_utc_catalogue() -> None:
+    """Format doc, Example G (h2023): the 2023 Kahramanmaras, Turkey M7.8.
+
+    The record reads 2023-02-06 10:17:34.34; USGS gives the origin time as
+    2023-02-06 01:17:34 UTC. That the two agree after a 9 h shift confirms the
+    JST reading against a catalog outside JMA, which is the only independent
+    check available for the time zone.
+    """
+    when = origin_time("2023", "02", "06", "10", "17", "3434")
+    assert when is not None
+    assert when.astimezone(timezone.utc) == datetime(
+        2023, 2, 6, 1, 17, 34, 340000, tzinfo=timezone.utc
+    )
+
+
+def test_the_fractional_second_is_hundredths_not_a_bare_integer() -> None:
+    """Format doc, field 7: seconds are `F4.2`, i.e. seconds x 100.
+
+    `5595` is 55.95 s (Example C). Reading the four digits as whole seconds
+    would overflow the minute; reading them as milliseconds would give 5.595 s.
+    """
+    when = origin_time("2023", "01", "01", "00", "19", "5595")
+    assert when is not None
+    assert (when.second, when.microsecond) == (55, 950000)
+
+
+def test_a_blank_second_field_leaves_the_time_at_the_minute() -> None:
+    """Format doc, Example I (h1919 line 1130, the 1923 Kanto event).
+
+    Seconds c14-17 are entirely blank - "seconds unknown", not zero. 18 records
+    in h1919 do this. The event is still located to the minute, 12:03 JST, so
+    the time is returned with second 0 and the *field* recorded as absent;
+    see `test_a_blank_second_field_is_reported_as_absent` in the parse tests
+    for the flag that keeps "unknown" distinguishable from "exactly 00.00 s".
+    """
+    when = origin_time("1923", "09", "01", "12", "03", "    ")
+    assert when == datetime(
+        1923, 9, 1, 12, 3, tzinfo=timezone(timedelta(hours=9))
+    )
+
+
+def test_a_second_field_with_blank_decimals_keeps_its_whole_seconds() -> None:
+    """Format doc, Traps 9: 3 records in h1919 have blank second decimals.
+
+    `54  ` is 54.00 s. The naive strip-and-divide reads it as 0.54 s.
+    """
+    when = origin_time("1923", "09", "01", "12", "03", "54  ")
+    assert when is not None
+    assert (when.second, when.microsecond) == (54, 0)
+
+
+def test_a_non_numeric_time_field_names_the_field() -> None:
+    """Issue #3: a typed error naming the offending field."""
+    with pytest.raises(FieldError) as caught:
+        origin_time("2O23", "01", "01", "00", "08", "0150")
+    assert caught.value.field == "year"
+
+
+def test_an_impossible_calendar_date_is_rejected() -> None:
+    """A day of 32 is not a date. `datetime` would raise; the error is typed."""
+    with pytest.raises(FieldError) as caught:
+        origin_time("2023", "01", "32", "00", "08", "0150")
+    assert caught.value.field == "origin time"

@@ -12,6 +12,7 @@ raises a typed error naming the field; nothing falls back to a plausible value.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 RECORD_LENGTH = 96
@@ -117,6 +118,76 @@ def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
             "a sexagesimal field can never reach 60, so the slice is wrong",
         )
     return sign * (whole + fraction / MINUTES_PER_DEGREE)
+
+
+JST = timezone(timedelta(hours=9), "JST")
+"""Japan Standard Time, UTC+9 - the time zone of every JMA origin time.
+
+Stated by the specification only on the English layout table, in the Year
+field: "Year of origin time (Japan Standard Time = UTC + 9 h; the same applies
+below.)". The Japanese table omits it entirely. The note is not scoped by
+record type, so `U` and `I` records are read as JST too; the format doc
+cross-checks both against external UTC catalogs (the 2023 Turkey M7.8 and the
+1920 Haiyuan M8.3) and both agree after a 9 h shift.
+
+Attached to every returned datetime rather than left implicit: a naive
+datetime compared against a UTC catalog is silently nine hours wrong.
+"""
+
+
+def _integer_field(raw: str, *, field: str, columns: str) -> int:
+    """A blank-free integer field. Blank or non-numeric is an error, not a 0."""
+    if not raw.strip().isdigit():
+        raise FieldError(field, columns, raw, "not an integer")
+    return int(raw)
+
+
+ORIGIN_TIME_COLUMNS = {
+    "year": "02-05",
+    "month": "06-07",
+    "day": "08-09",
+    "hour": "10-11",
+    "minute": "12-13",
+}
+"""Columns of the blank-free integer time fields (format doc, field table)."""
+
+
+def origin_time(
+    year: str, month: str, day: str, hour: str, minute: str, second: str
+) -> datetime:
+    """Fields 2-7 (c02-17) -> an aware datetime in JST.
+
+    Year through minute are plain integers and never blank. The second field is
+    `F4.2` - seconds x 100 - and goes through the fixed-point decoding, because
+    it meets Traps 9 as well: h1919 holds 3 records whose second decimals alone
+    are blank (`54  ` is 54.00 s, not 0.54 s) and 18 whose second field is
+    wholly blank, meaning the event is located only to the minute.
+
+    A wholly blank second yields a datetime at second 0. That is a rendering
+    choice, not a claim of precision: `Hypocenter.second_is_known` carries the
+    distinction so a caller can tell "unknown" from "exactly 00.00 s".
+    """
+    raws = (year, month, day, hour, minute)
+    values = [
+        _integer_field(raw, field=name, columns=columns)
+        for raw, (name, columns) in zip(raws, ORIGIN_TIME_COLUMNS.items(), strict=True)
+    ]
+    seconds = _fixed_point(second, field="second", columns="14-17") or Decimal(0)
+    whole_seconds, fraction = divmod(seconds, 1)
+    try:
+        return datetime(
+            *values,
+            int(whole_seconds),
+            int(fraction * 1_000_000),
+            tzinfo=JST,
+        )
+    except ValueError as error:
+        raise FieldError(
+            "origin time",
+            "02-17",
+            "".join(raws) + second,
+            str(error),
+        ) from error
 
 
 NEGATIVE_MAGNITUDE_UNITS = {"-": 0, "A": 1, "B": 2, "C": 3}
