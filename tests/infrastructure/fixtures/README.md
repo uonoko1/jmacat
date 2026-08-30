@@ -33,11 +33,33 @@ real thing, including its leading `<!DOCTYPE html>`.
 ## Licensing and attribution
 
 `h1919_sample.zip` contains data from the Japan Meteorological Agency's
-hypocenter catalog, provided under the **Japan Public Data License (Version
-1.0)**, which permits redistribution with attribution.
+hypocenter catalog, published under the **Public Data License (Version 1.0)**
+(公共データ利用規約（第1.0版）, "PDL1.0"), which permits redistribution with
+attribution. See JMA's terms page,
+<https://www.jma.go.jp/jma/kishou/info/coment.html>, and the licence text at
+<https://www.digital.go.jp/resources/open_data/public_data_license_v1.0>.
 
-    Source: Japan Meteorological Agency, seismic hypocenter catalog
-    (https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html)
+The terms require both a source citation and, where the content has been
+edited or processed, a separate statement that it was — so both are given:
+
+    Source: Japan Meteorological Agency, Seismological Bulletin of Japan,
+    hypocenter catalog
+    (https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo/h1919.zip)
+
+    Processed by the jmacat project: excerpted to the first 12 record lines
+    and repacked as a single deflated member with a fixed timestamp. The
+    record lines themselves are byte-for-byte as published; nothing in them
+    was altered.
 
 Twelve lines is the smallest excerpt that still exercises the streaming path
 over more than one buffer boundary while keeping the committed excerpt minimal.
+
+`h2024_404.html` is JMA's HTTP 404 error page. It carries no catalog data, but
+it is JMA site content and is reproduced verbatim under the same terms:
+
+    Source: Japan Meteorological Agency
+    (https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo/h2024.zip)
+    Reproduced unmodified.
+
+See the "Data provenance and attribution" section of the top-level `README.md`
+for what these obligations mean for a user publishing results.

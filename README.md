@@ -6,12 +6,6 @@ It fetches the published JMA Seismological Bulletin hypocenter files, decodes th
 96-byte fixed-width records into physical quantities, and writes them as Parquet
 or CSV.
 
-> **Not for operational use.** This is not a substitute for official disaster
-> information and must not be used for evacuation decisions or real-time
-> alerting. Catalog data is fetched at run time under the JMA site terms
-> (Public Data License 1.0, attribution required) and is never redistributed
-> from this repository.
-
 The record layout, its traps and every offset are documented in
 [`docs/jma-hypocenter-format.md`](docs/jma-hypocenter-format.md), which is the
 source of truth for this project. Contribution rules are in
@@ -94,6 +88,273 @@ signature and requires `--help` to advertise each one.
 the Sea of Japan; see `NAMED_AREAS` in `domain/filters.py` for the extent and
 its provenance. An unknown name lists the ones that work rather than returning
 zero events.
+
+## What this tool is for, and what it is not for
+
+jmacat exists to turn a published, finalized seismic catalog into a table you can
+analyse. The intended uses are retrospective: computing a Gutenberg-Richter
+b-value, building a declustered catalog, teaching a seismology class how the
+record layout encodes a hypocentre, preparing an input file for a hazard model.
+Everything in the design serves that — the catalog it reads lags the present by
+years, the archives are cached on disk rather than polled, and the output is a
+static file.
+
+That is also the whole of what it is fit for. **This tool is not a substitute for
+official disaster information, and must not be used for evacuation decisions,
+real-time alerting, or any automated decision affecting human safety.**
+
+This is not a disclaimer added for form. The data itself cannot support such a
+use: the finalized catalog is published with a delay of years, so the most recent
+event it contains is old news before this tool ever sees it — as of 2026-08-30 the
+newest available year is 2023, and the 2024 Noto Peninsula earthquake is not in
+this dataset at all. A pipeline built on jmacat that appeared to be watching for
+earthquakes would be watching a file that cannot change in response to one.
+
+For anything operational — warnings, current seismicity, evacuation guidance — use
+the official channels:
+
+- **Japan Meteorological Agency** — earthquake and tsunami information, warnings:
+  <https://www.jma.go.jp/bosai/map.html>
+- **Your local government (自治体)** — evacuation advisories and shelter information
+  for your area.
+- **Cabinet Office, Disaster Management (内閣府 防災情報)** —
+  <https://www.bousai.go.jp/>
+
+The project is also **experimental**. It is being built to find out whether a tool
+of this shape is useful to researchers in Japan, not because a need for it has
+been established. The output format may change, and the accuracy claims it makes
+are the ones its tests cover — no more.
+
+## Data provenance and attribution
+
+### Where the data comes from
+
+All seismic data handled by this tool is published by the **Japan Meteorological
+Agency (気象庁)** as part of the Seismological Bulletin of Japan (地震月報（カタログ編）):
+
+| What | URL |
+| --- | --- |
+| Hypocenter file index | <https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html> |
+| Yearly hypocenter archives | `https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo/h{year}.zip` |
+| Record format specification | <https://www.data.jma.go.jp/eqev/data/bulletin/data/format/hypfmt_e.html> |
+| Epicentre region name appendix (1.A.3) | <https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/appendixj.html> |
+
+### This repository redistributes no catalog data
+
+The archives are fetched at run time into **your own environment** and cached
+there (see [`docs/catalog-cache.md`](docs/catalog-cache.md)). Nothing under
+`h{year}.zip` is committed here; `.gitignore` excludes `*.zip` and
+`h[0-9][0-9][0-9][0-9]` so it cannot be committed by accident.
+
+There are exactly two exceptions, both tiny recorded test fixtures with their
+provenance and attribution stated in
+[`tests/infrastructure/fixtures/README.md`](tests/infrastructure/fixtures/README.md):
+`h1919_sample.zip` (651 bytes, the first 12 record lines of `h1919`) and
+`h2024_404.html` (2,203 bytes, JMA's 404 page, which carries no catalog data).
+
+### The terms the data is under
+
+JMA's site terms page, [気象庁ホームページについて](https://www.jma.go.jp/jma/kishou/info/coment.html)
+(read 2026-08-30), states:
+
+> 気象庁ホームページで公開している情報（以下「コンテンツ」といいます。）は、権利表記の記載がない限り「公共データ利用規約（第1.0版）」に準拠した利用条件の下で、利用することができます。
+
+That is: unless a page carries its own rights notice, the content is available
+under the **Public Data License (Version 1.0)** — 公共データ利用規約（第1.0版）,
+abbreviated **PDL1.0** — published by the Digital Agency at
+<https://www.digital.go.jp/resources/open_data/public_data_license_v1.0>.
+
+Two points worth stating precisely, because both are easy to get wrong:
+
+- PDL1.0 (established 2024-07-05) is the **successor** to the older 政府標準利用規約.
+  It is not the same document, and it is the one JMA's page names today.
+- PDL1.0 states explicitly that it is compatible with CC BY 4.0, and that the
+  State permits use under CC BY: 「クリエイティブ・コモンズ・ライセンスの表示4.0 国際
+  ライセンスに規定される著作権利用許諾条件（以下「CC BY」といいます。）と互換性が
+  あります。」 So a CC BY 4.0 attribution satisfies it, but the citation forms
+  below are what JMA's own page asks for.
+
+### What the terms actually require
+
+JMA's terms page gives the required forms verbatim. Quoting them rather than
+paraphrasing, since a paraphrase of an attribution requirement is not an
+attribution requirement:
+
+> (1)　出典の記載について
+>
+> コンテンツを利用する際は出典を記載してください。出典の記載方法は以下のとおりです。
+>
+> （出典記載例）
+>
+> 出典：気象庁ホームページ　（当該ページのURL）
+>
+> 出典：○○気象台ホームページ （当該ページのURL）
+>
+> 「図・写真等の名称」（気象庁ホームページより）
+>
+> コンテンツを編集・加工等して利用する場合は、上記出典とは別に、編集・加工等を行ったことを記載してください。
+> また編集・加工した情報を、あたかも国（又は府省等）が作成したかのような態様で公表・利用してはいけません。
+>
+> （コンテンツを編集・加工等して利用する場合の記載例）
+>
+> 気象庁「図・写真等の名称」 （当該ページのURL）を加工して作成
+>
+> 気象庁「○○調査」をもとに△△株式会社作成
+
+In English, the three obligations are:
+
+1. **Cite the source.** Give the source and the URL of the page you took it from.
+2. **If you edited or processed it, say so** — as a statement *separate from* the
+   source citation. PDL1.0 additionally requires naming who did the processing
+   （「編集・加工等を行ったこと及びその主体を記載してください」）.
+3. **Do not present processed information as though the State produced it.**
+   Publishing a derived dataset in a form that makes it look like an unmodified
+   government product is prohibited outright.
+
+### What this means for you
+
+Anything jmacat writes is **processed** JMA data — it is decoded from a
+fixed-width record into physical quantities, filtered, and re-serialised.
+Obligation 2 therefore always applies to jmacat output. This is the part most
+easily got wrong: citing the source alone is not enough.
+
+**If you publish results derived from jmacat output** (a paper, a figure, a
+poster, a thesis), cite the catalog and state that it was processed. For example:
+
+> Hypocenter data: Japan Meteorological Agency, Seismological Bulletin of Japan
+> (<https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html>), processed by the
+> authors using jmacat.
+>
+> 出典：気象庁ホームページ（https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html）
+> を加工して作成。
+
+**If you redistribute the output itself** (a derived CSV or Parquet file, a
+release asset, a dataset deposit), the same citation must travel *with the file*
+— in a README, a data descriptor or a metadata field — not only in a paper that
+cites it. State that it is processed JMA data and who processed it, and do not
+present it as an official JMA product.
+
+**Note on wording.** The example sentences above are ours; JMA's page gives the
+example forms quoted in full in the previous section, and it does not prescribe
+an English rendering. If you need certainty for a formal publication, follow the
+Japanese forms verbatim from JMA's own page.
+
+Also note PDL1.0's disclaimer: the State accepts no responsibility for anything a
+user does with the content, including with processed derivatives. That is
+independent of this project's own no-warranty terms in [`LICENSE`](LICENSE).
+
+### The code
+
+The code in this repository is MIT-licensed; see [`LICENSE`](LICENSE). The MIT
+licence covers the code alone and says nothing about the data, which stays under
+PDL1.0 wherever it goes.
+
+## Known limitations
+
+These are the limitations found in this project's own data work, not a generic
+list. Each is documented at greater length where it is implemented.
+
+### The catalog lags the present by years
+
+**This is the limitation that surprises people, so it comes first.** JMA
+publishes the *finalized* catalog, which is reviewed before release. As of
+2026-08-30, `h2023.zip` is the newest year that exists; `h2024.zip` and
+`h2025.zip` both return HTTP 404.
+
+The practical consequence: **the 2024 Noto Peninsula earthquake is not in this
+dataset**, and neither is anything else after 2023. A request for an unpublished
+year is reported as such rather than returning an empty result, so the tool will
+not silently tell you a year had no earthquakes.
+
+If you need recent or provisional events, this catalog is the wrong source.
+
+### One archive can hold more than one year
+
+The early era is not one file per year. `h1919.zip` contains a single member
+covering **1919-1950** (28,235 records). The adapter reads the archive's one
+member whatever it is named, rather than assuming the name matches the year you
+asked for.
+
+### Whole-degree coordinates carry precision the number cannot express
+
+Some historical records publish an epicentre only to the whole degree, leaving the
+decimal-minutes field blank. A latitude published that way decodes to exactly
+`35` — indistinguishable, by value and by representation, from a determination of
+35° 00.00′. The difference is roughly 100 km of uncertainty against roughly 15 m.
+
+The output therefore carries `latitude_minutes_are_known` and
+`longitude_minutes_are_known` as separate boolean columns. **A caller who ignores
+them has a silently over-precise coordinate.** The two flags are independent — a
+record can publish one coordinate to minutes and the other only to the degree.
+
+### A filter drops records that have no value for the field it filters on
+
+`--min-magnitude 3.0` selects records whose magnitude is at least 3.0. A record
+with **no magnitude at all** does not satisfy that claim and is excluded.
+
+Blank magnitude is common, so this materially changes a result set. On `h1919`
+(1919-1950), a magnitude filter of 3.0 returns 15,874 of 28,235 records; of the
+12,361 excluded, **11,621 — 41.2 per cent of the corpus — are excluded for
+carrying no magnitude, not for being too small.** On `h2023` the same field is
+blank on 9,973 of 257,020 records (3.9 per cent).
+
+The same rule applies to depth, although the depth field is blank on no record of
+either corpus. A filter that is not applied excludes nothing, so records with a
+missing value are kept by simply not filtering on that field.
+
+### Named areas are rectangles, not boundaries
+
+`ishikawa` is a bounding box drawn around the prefecture's four extreme points
+[as published by the prefecture](https://www.pref.ishikawa.lg.jp/kensei/koho/gaiyo/p0.html)
+(source: GSI, World Geodetic System). It is **not a prefecture boundary**, and no
+point-in-polygon test is performed.
+
+A rectangle around Ishikawa also covers parts of Toyama, Gifu and Fukui and a
+large area of the Sea of Japan. Measured on `h2023`, the box selects 31,954
+records, of which 30,986 carry one of the two Noto region names it is aimed at
+and **968 — about 3 per cent — do not.** If you need the real boundary you need a
+polygon dataset and a point-in-polygon test, which this tool does not provide.
+
+### CSV cannot distinguish a null string from an empty string
+
+On Python 3.11, which is this project's baseline, CSV writes both a null and a
+zero-length string as an empty field. This is lossless for this catalog — no
+field of the 96-byte record can hold a zero-length string meaning anything other
+than "blank" — but it is a real limit of the format. **Parquet keeps the two
+apart**, and is the better choice if you are handing the output to another tool.
+
+Numeric nulls are unambiguous in both: `,,` is a null and `,0.0,` is a measured
+zero. See *Nulls* below.
+
+### Eleven record fields are not decoded yet
+
+The record has 31 fields and the parser decodes 16. The undecoded eleven —
+including `maximum_intensity`, `damage_class` and `tsunami_class` — are **absent
+from the output rather than emitted as empty columns**, so their absence is
+visible. See *Record fields not yet in the output* below.
+
+### Codes the specification documents but no sampled year exhibits
+
+The parser accepts every code the specification defines, but some have no worked
+example in this project's corpora, because they occur in years nobody has
+sampled. `docs/jma-hypocenter-format.md` lists them in its *Unresolved* section;
+they include magnitude forms `B*`/`C*` (M-2.x, M-3.x), travel-time tables
+`2`/`3`/`4`/`6`, location precisions `4`/`8`/`9`, maximum intensities `7`, `C`,
+`R`, `M`, `S`, `L`, `F`, damage class `X`, and tsunami classes `3`-`6`. The years
+1951-1994 and 1996-2018 remain unsampled.
+
+Two further gaps are recorded there rather than guessed at: district `9` and
+district `8` / region `400` (`FAR FIELD`) are used by the catalog but appear in no
+appendix table, so the 269-entry region mapping must not be treated as
+exhaustive; and the region *name* text is not byte-stable across years, so
+`region_name` should never be used as a key — key on `district` and
+`region_number` instead.
+
+### Region names are ASCII in every year checked, but only four were checked
+
+The specification declares the region name field `A24` without naming an
+encoding. `h1919`, `h1995`, `h2019` and `h2023` contain no byte above 0x7F. The
+intervening years were not checked.
 
 ## Output format
 
