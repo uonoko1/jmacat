@@ -1,4 +1,35 @@
-"""Pure filter predicates over hypocenter events."""
+"""Pure filter predicates over hypocenter events.
+
+Each filter is a factory returning an `EventPredicate` — a pure function from
+an event to whether it is kept. Filters compose with `all_of`, and every
+filter is optional: an unwanted one is simply not passed.
+
+Filters read events through the `FilterableEvent` Protocol, so they do not
+depend on the concrete hypocenter value object.
+
+Four conventions decide results and are therefore stated here rather than left
+to the reader to infer; each is tested.
+
+**Ranges are closed.** Every bound — time, magnitude, depth, and all four
+edges of a bounding box — is inclusive. A record exactly on a limit is kept,
+so `minimum=3.0` admits an M3.0 record, which is what "M3.0 and above" means.
+
+**Missing values are excluded while their filter is active.** A record whose
+magnitude or depth is `None` fails a bounded `magnitude_range` / `depth_range`
+and passes an unbounded one. Blank fields are common — 9,973 of 257,020
+`h2023` records carry no magnitude — so this is not a corner case. See
+`_passes_optional_range`.
+
+**Time bounds must be timezone-aware.** JMA origin times are JST (UTC+9); a
+naive bound would shift the window by nine hours in silence, so it is refused.
+Bounds in any zone are compared by absolute instant.
+
+**A bounding box may cross the antimeridian**, written as `west > east`. The
+catalog holds events on both sides of ±180. See `BoundingBox`.
+
+Named areas (`named_area`) are **approximate rectangles, not boundaries**. See
+`NAMED_AREAS` for the limitation and the provenance of each box.
+"""
 
 from __future__ import annotations
 
