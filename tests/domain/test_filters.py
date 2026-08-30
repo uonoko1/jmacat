@@ -9,9 +9,11 @@ import pytest
 
 from jmacat.domain.filters import (
     BoundingBox,
+    FilterableEvent,
     FilterError,
     NaiveDatetimeError,
     UnknownAreaError,
+    all_of,
     available_area_names,
     bounding_box,
     depth_range,
@@ -368,3 +370,61 @@ def test_available_area_names_are_sorted_and_include_ishikawa() -> None:
     names = available_area_names()
     assert "ishikawa" in names
     assert list(names) == sorted(names)
+
+
+def test_all_of_requires_every_predicate_to_pass() -> None:
+    predicate = all_of(magnitude_range(minimum=3.0), depth_range(maximum_km=70.0))
+    assert predicate(event(magnitude=6.5, depth_km=50.0)) is True
+    assert predicate(event(magnitude=0.3, depth_km=50.0)) is False
+    assert predicate(event(magnitude=6.5, depth_km=105.0)) is False
+
+
+def test_all_of_with_no_predicates_admits_everything() -> None:
+    """Every filter is optional, so composing none of them is the identity."""
+    assert all_of()(event()) is True
+
+
+def test_all_of_short_circuits_on_the_first_rejection() -> None:
+    """A composed filter runs over 257,000 records, so a later predicate must
+    not be evaluated once one has already rejected the event.
+    """
+    calls: list[str] = []
+
+    def reject(_: FilterableEvent) -> bool:
+        calls.append("reject")
+        return False
+
+    def record(_: FilterableEvent) -> bool:
+        calls.append("record")
+        return True
+
+    assert all_of(reject, record)(event()) is False
+    assert calls == ["reject"]
+
+
+def test_all_of_composes_the_whole_issue_example() -> None:
+    """ "M3.0 and above near Ishikawa in 2023" - the outcome issue #10 names."""
+    predicate = all_of(
+        time_range(
+            start=datetime(2023, 1, 1, 0, 0, tzinfo=JST),
+            end=datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=JST),
+        ),
+        magnitude_range(minimum=3.0),
+        bounding_box(named_area("ishikawa")),
+    )
+    noto = event(
+        origin_time=datetime(2023, 5, 5, 14, 42, 4, 100000, tzinfo=JST),
+        latitude=37 + 32.34 / 60,
+        longitude=137 + 18.27 / 60,
+        depth_km=12.14,
+        magnitude=6.5,
+    )
+    assert predicate(noto) is True
+
+    too_small = event(
+        origin_time=datetime(2023, 5, 5, 14, 42, 4, 100000, tzinfo=JST),
+        latitude=37 + 32.34 / 60,
+        longitude=137 + 18.27 / 60,
+        magnitude=0.3,
+    )
+    assert predicate(too_small) is False

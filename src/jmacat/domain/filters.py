@@ -78,6 +78,29 @@ def _require_aware(value: datetime | None, *, name: str) -> None:
         )
 
 
+EventPredicate = Callable[[FilterableEvent], bool]
+"""A filter: a pure function from an event to whether it is kept."""
+
+
+def all_of(*predicates: EventPredicate) -> EventPredicate:
+    """Compose filters: accept an event only if every predicate accepts it.
+
+    This is how "every filter is optional" is expressed — an unwanted filter is
+    simply not passed, and `all_of()` with no predicates admits everything.
+    Callers therefore build the argument list conditionally rather than passing
+    sentinel values into each filter.
+
+    Evaluation **short-circuits** on the first rejection. A composed filter is
+    applied to every record of a 257,000-record year, so the cheap predicates
+    should be listed first.
+    """
+
+    def predicate(event: FilterableEvent) -> bool:
+        return all(each(event) for each in predicates)
+
+    return predicate
+
+
 def _passes_optional_range(
     value: float | None,
     *,
@@ -122,7 +145,7 @@ def _passes_optional_range(
 
 def time_range(
     *, start: datetime | None = None, end: datetime | None = None
-) -> Callable[[FilterableEvent], bool]:
+) -> EventPredicate:
     """Accept events whose origin time lies in the closed interval [start, end].
 
     Both bounds are **inclusive**: a record whose origin time equals `start` or
@@ -147,7 +170,7 @@ def time_range(
 
 def magnitude_range(
     *, minimum: float | None = None, maximum: float | None = None
-) -> Callable[[FilterableEvent], bool]:
+) -> EventPredicate:
     """Accept events whose magnitude lies in the closed interval.
 
     Both bounds are **inclusive**: `minimum=3.0` admits an M3.0 record, which
@@ -167,7 +190,7 @@ def magnitude_range(
 
 def depth_range(
     *, minimum_km: float | None = None, maximum_km: float | None = None
-) -> Callable[[FilterableEvent], bool]:
+) -> EventPredicate:
     """Accept events whose hypocentral depth lies in the closed interval.
 
     Bounds are in kilometres and **inclusive**; either may be `None`.
@@ -246,7 +269,7 @@ class BoundingBox:
         return self.west <= longitude <= self.east
 
 
-def bounding_box(box: BoundingBox) -> Callable[[FilterableEvent], bool]:
+def bounding_box(box: BoundingBox) -> EventPredicate:
     """Accept events whose epicentre lies inside `box`, edges included."""
 
     def predicate(event: FilterableEvent) -> bool:
