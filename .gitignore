@@ -13,3 +13,7 @@ build/
 h[0-9][0-9][0-9][0-9]
 data/
 .jmacat-cache/
+
+# ...except the small, attributed recorded fixtures the adapter tests need.
+# See tests/infrastructure/fixtures/README.md for provenance and licensing.
+!tests/infrastructure/fixtures/*.zip
