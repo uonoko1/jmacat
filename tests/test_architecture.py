@@ -1,11 +1,17 @@
 """The dependency rule, enforced mechanically.
 
-    controller  ->  usecase  ->  domain
-    infrastructure  ->  usecase/ports   (dependency inversion)
+The four layers, innermost first:
 
-`domain/` may import the standard library only. `domain/` and `usecase/` may
-never import `jmacat.infrastructure` or `jmacat.controller`. Convention is not
-enough: this walks the AST of every module under `src/jmacat/`.
+    domain  <-  usecase  <-  infrastructure  <-  controller
+
+A module may import its own layer and anything inward of it; importing outward
+is a violation. `controller/` is the composition root, so it may reach
+`infrastructure/` to wire concrete adapters -- but no adapter may reach the
+CLI. `domain/` and `usecase/` may additionally import the standard library
+only. The full matrix and its reasoning live in CONTRIBUTING.md.
+
+Convention is not enough: this walks the AST of every module under
+`src/jmacat/`.
 
 Known limitation: only `import` and `from ... import` statements are seen, so
 dynamic imports (`importlib.import_module(...)`, `__import__(...)`) are not
@@ -76,9 +82,23 @@ def is_third_party(module: str) -> bool:
     return root != PACKAGE and root not in sys.stdlib_module_names
 
 
-# The layers that must not leak inward, and the layers that must not reach them.
-OUTER_LAYERS = ("infrastructure", "controller")
+# The layers, innermost first. A layer may import itself and anything to its
+# left; importing anything to its right points outward and is a violation.
+#
+# `infrastructure` and `controller` are both adapter layers, but they are not
+# peers: composition happens at the outermost layer, so the CLI wires concrete
+# adapters into interactors and therefore sits outside `infrastructure`. The
+# reverse -- an adapter reaching for the CLI -- has no legitimate form, and is
+# what issue #21 found unenforced. See CONTRIBUTING.md for the full matrix.
+LAYERS = ("domain", "usecase", "infrastructure", "controller")
+
+# Layers that may not import a third-party package: they carry the
+# scientifically sensitive logic and must be testable with no dependencies
+# installed. `infrastructure/` and `controller/` exist precisely to hold them.
 PURE_LAYERS = ("domain", "usecase")
+
+# Kept for the message and for tests that name the adapter layers as a set.
+OUTER_LAYERS = ("infrastructure", "controller")
 
 
 def layer_of(module: str) -> str | None:
@@ -87,22 +107,34 @@ def layer_of(module: str) -> str | None:
     return parts[1] if len(parts) > 1 and parts[0] == PACKAGE else None
 
 
+def points_outward(*, importer: str, imported: str) -> bool:
+    """True when a module in layer `importer` may not import layer `imported`.
+
+    Both names must be layers of ours; a module outside the four layers (for
+    instance `jmacat` itself, whose `layer_of` is None) is nobody's dependency
+    problem and is handled by the caller.
+    """
+    return LAYERS.index(imported) > LAYERS.index(importer)
+
+
 def violations(module: str, imports: list[str]) -> list[str]:
     """Every way `module` breaks the dependency rule by importing `imports`."""
     layer = layer_of(module)
-    if layer not in PURE_LAYERS:
+    if layer not in LAYERS:
         return []
     found: list[str] = []
     for imported in imports:
+        target = layer_of(imported)
         if is_third_party(imported):
-            found.append(
-                f"{module} imports third-party {imported!r}; "
-                f"{layer}/ is standard library only"
-            )
-        elif layer_of(imported) in OUTER_LAYERS:
+            if layer in PURE_LAYERS:
+                found.append(
+                    f"{module} imports third-party {imported!r}; "
+                    f"{layer}/ is standard library only"
+                )
+        elif target in LAYERS and points_outward(importer=layer, imported=target):
             found.append(
                 f"{module} imports {imported!r}; "
-                f"{layer}/ must not depend on {layer_of(imported)}/"
+                f"{layer}/ must not depend on {target}/"
             )
     return found
 
@@ -457,10 +489,19 @@ def test_the_guard_catches_an_outward_leak_written_the_idiomatic_way() -> None:
 
 
 def test_the_guard_catches_an_absolute_outward_leak_from_infrastructure() -> None:
-    (message,) = scan(
+    """`from jmacat.controller import cli` reaches the package and the submodule.
+
+    Both are reported, as they are for an inward leak: `imported_modules`
+    records the module *and* the name taken from it, because only the dotted
+    form carries a layer.
+    """
+    messages = scan(
         "from jmacat.controller import cli\n", module="jmacat.infrastructure.leak"
     )
-    assert "jmacat.controller" in message
+    assert [m.split("imports ")[1] for m in messages] == [
+        "'jmacat.controller'; infrastructure/ must not depend on controller/",
+        "'jmacat.controller.cli'; infrastructure/ must not depend on controller/",
+    ]
 
 
 def test_the_guard_catches_a_plain_outward_import_from_infrastructure() -> None:
@@ -478,10 +519,10 @@ def test_the_guard_catches_a_bare_parent_relative_outward_leak() -> None:
 
 def test_the_guard_catches_a_grandparent_relative_outward_leak() -> None:
     """`from ...controller import cli` inside a nested infrastructure package."""
-    (message,) = scan(
+    messages = scan(
         "from ...controller import cli\n", module="jmacat.infrastructure.codec.leak"
     )
-    assert "jmacat.controller" in message
+    assert messages and all("jmacat.controller" in m for m in messages)
 
 
 def test_the_guard_allows_the_composition_root_wiring_an_adapter() -> None:
