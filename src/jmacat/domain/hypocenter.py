@@ -65,6 +65,14 @@ def _signed_degrees(raw: str, *, field: str, columns: str) -> tuple[int, Decimal
     reads `- 7` - a space *between* the sign and the digit. `int("- 7")`
     raises, so interior spaces are removed before converting. The minutes field
     is always unsigned and inherits this sign.
+
+    The sign is searched for anywhere in the field, not just at its first
+    column, and that looseness is required rather than sloppy. h2023 writes
+    the sign in column 1, but h1919 writes it in column 2 on 148 latitude
+    fields (` -5`) and 79 longitude fields (` -4`) - 227 records that a
+    `raw.startswith("-")` reading would decode with the wrong hemisphere and
+    no error, among them S Sumatera at 5.49 degS 104.49 degE and New Ireland
+    at 4.81 degS 153.86 degE. Do not "tighten" this to `startswith`.
     """
     sign = -1 if "-" in raw else 1
     digits = raw.replace("-", "").replace(" ", "")

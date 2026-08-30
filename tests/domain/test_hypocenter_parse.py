@@ -495,6 +495,40 @@ def test_a_whole_degree_epicentre_south_and_west_keeps_its_signs() -> None:
     assert event.longitude_minutes_are_known is False
 
 
+def test_a_sign_in_the_second_column_of_the_degree_field_still_parses() -> None:
+    """h1919 lines 50 and 74, verbatim. The sign is not always in column 1.
+
+    h2023 writes the minus in the leftmost column of the degree field, which
+    is what the format doc's Traps 2 describes. h1919 does not: 148 latitude
+    fields and 79 longitude fields there carry the sign in the *second*
+    column - ` -5`, ` -4` - with the digit right-aligned after it.
+
+    So a `raw.startswith("-")` reading of the sign, which looks like a
+    tightening of the loose `"-" in raw` check the parser uses, would decode
+    227 real records into the northern hemisphere with nothing raised. These
+    two pin the looseness: S Sumatera is 5.49 degS and New Ireland 4.81 degS,
+    both several hundred km from their mirrored positive values.
+    """
+    sumatera = (
+        "I1919040209345958     -52958     1042934     200    64W             "
+        "S SUMATERA, INDONESIA       "
+    )
+    new_ireland = (
+        "I1919050704411301     -44836     1535154     350    82W             "
+        "NEW IRELAND, P.N.G.         "
+    )
+    assert len(sumatera) == 96
+    assert len(new_ireland) == 96
+
+    event = parse_record(sumatera)
+    assert event.latitude == Decimal("-5.493")
+    assert event.longitude == Decimal("104.489")
+
+    event = parse_record(new_ireland)
+    assert event.latitude == Decimal("-4.806")
+    assert event.longitude == Decimal("153.859")
+
+
 def test_a_written_zero_station_count_is_zero_not_absent() -> None:
     """h1919 carries 247 records whose station count c93-95 is written `  0`.
 
