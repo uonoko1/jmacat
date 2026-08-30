@@ -8,7 +8,10 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from jmacat.domain.filters import (
+    BoundingBox,
+    FilterError,
     NaiveDatetimeError,
+    bounding_box,
     depth_range,
     magnitude_range,
     time_range,
@@ -210,3 +213,93 @@ def test_depth_range_excludes_an_event_with_no_depth() -> None:
 
 def test_depth_range_with_no_bounds_admits_a_missing_depth() -> None:
     assert depth_range()(event(depth_km=None)) is True
+
+
+def test_bounding_box_admits_an_event_inside_the_box() -> None:
+    box = BoundingBox(
+        south=35.0, north=36.0, west=140.0, east=141.0, description="test"
+    )
+    assert bounding_box(box)(event()) is True
+
+
+def test_bounding_box_rejects_an_event_north_of_the_box() -> None:
+    box = BoundingBox(
+        south=35.0, north=36.0, west=140.0, east=141.0, description="test"
+    )
+    assert bounding_box(box)(event(latitude=41.1705)) is False
+
+
+def test_bounding_box_rejects_an_event_east_of_the_box() -> None:
+    box = BoundingBox(
+        south=35.0, north=36.0, west=140.0, east=141.0, description="test"
+    )
+    assert bounding_box(box)(event(longitude=142.931833)) is False
+
+
+def test_bounding_box_edges_are_inclusive() -> None:
+    """All four edges are closed: a record exactly on a corner is inside."""
+    box = BoundingBox(
+        south=35.0, north=36.0, west=140.0, east=141.0, description="test"
+    )
+    predicate = bounding_box(box)
+    for lat, lon in ((35.0, 140.0), (36.0, 141.0), (35.0, 141.0), (36.0, 140.0)):
+        assert predicate(event(latitude=lat, longitude=lon)) is True
+
+
+def test_bounding_box_admits_a_southern_hemisphere_event() -> None:
+    """`h2023` example E, TANIMBAR IS., INDONESIA at 7.058667 degS."""
+    box = BoundingBox(
+        south=-10.0, north=-5.0, west=129.0, east=131.0, description="test"
+    )
+    assert bounding_box(box)(event(latitude=-7.058667, longitude=130.009)) is True
+
+
+def test_bounding_box_crossing_the_antimeridian_admits_a_western_event() -> None:
+    """A box with `west > east` is read as crossing +/-180.
+
+    `h2023` holds the Kermadec-Tonga-Fiji cluster on both sides of the
+    antimeridian: 18 records carry a negative longitude (example F,
+    KERMADEC ISL., N.Z.L. at -178.661500) while others sit at +178 and +179.
+    A box for that cluster cannot be written with `west < east`.
+    """
+    box = BoundingBox(
+        south=-40.0, north=-15.0, west=175.0, east=-175.0, description="test"
+    )
+    assert bounding_box(box)(event(latitude=-30.2115, longitude=-178.6615)) is True
+
+
+def test_bounding_box_crossing_the_antimeridian_admits_an_eastern_event() -> None:
+    """The same box admits the positive-longitude half of the cluster:
+    `h2023` has SOUTH OF FIJI records at +178 and +179.
+    """
+    box = BoundingBox(
+        south=-40.0, north=-15.0, west=175.0, east=-175.0, description="test"
+    )
+    assert bounding_box(box)(event(latitude=-25.0, longitude=178.5)) is True
+
+
+def test_bounding_box_crossing_the_antimeridian_rejects_the_gap() -> None:
+    """The crossing box covers 175 -> 180 -> -175, not its complement. A
+    longitude of 0 is in the excluded 355 degrees and must be rejected.
+    """
+    box = BoundingBox(
+        south=-40.0, north=-15.0, west=175.0, east=-175.0, description="test"
+    )
+    assert bounding_box(box)(event(latitude=-25.0, longitude=0.0)) is False
+
+
+def test_bounding_box_rejects_a_south_edge_above_its_north_edge() -> None:
+    """Latitude has no wraparound, so `south > north` is a caller mistake,
+    not a crossing box. It is refused rather than silently matching nothing.
+    """
+    with pytest.raises(FilterError):
+        BoundingBox(south=36.0, north=35.0, west=140.0, east=141.0, description="test")
+
+
+def test_bounding_box_rejects_an_out_of_range_coordinate() -> None:
+    with pytest.raises(FilterError):
+        BoundingBox(
+            south=-100.0, north=35.0, west=140.0, east=141.0, description="test"
+        )
+    with pytest.raises(FilterError):
+        BoundingBox(south=35.0, north=36.0, west=140.0, east=200.0, description="test")

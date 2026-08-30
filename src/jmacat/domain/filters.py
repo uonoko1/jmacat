@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -182,5 +183,73 @@ def depth_range(
         return _passes_optional_range(
             event.depth_km, minimum=minimum_km, maximum=maximum_km
         )
+
+    return predicate
+
+
+@dataclass(frozen=True)
+class BoundingBox:
+    """A latitude/longitude rectangle in signed decimal degrees.
+
+    `south`/`north` are latitudes in [-90, 90] and `west`/`east` are longitudes
+    in [-180, 180], matching the sign convention the JMA record itself uses
+    (the sign column at c22 and c33; see `docs/jma-hypocenter-format.md`).
+
+    **Crossing the antimeridian.** `west > east` is not an error: it means the
+    box runs eastward from `west` across +/-180 to `east`. `west=175,
+    east=-175` is the 10-degree band around the antimeridian, not the 350
+    degrees the other way. This case is real rather than theoretical — `h2023`
+    holds the Kermadec-Tonga-Fiji cluster on both sides of the line, 18 records
+    at negative longitudes down to -179.2 alongside SOUTH OF FIJI records at
+    +178 and +179 — and a box for it cannot be expressed with `west < east`.
+    An implementation that assumed `west < east` would return an empty result
+    for the western half and never say why.
+
+    Latitude has no such wraparound, so `south > north` is always a caller
+    mistake and is rejected.
+
+    `description` is required and carries the provenance of the numbers, so
+    that a hand-drawn box can never travel through the system anonymously.
+    """
+
+    south: float
+    north: float
+    west: float
+    east: float
+    description: str
+
+    def __post_init__(self) -> None:
+        for name, value in (("south", self.south), ("north", self.north)):
+            if not -90.0 <= value <= 90.0:
+                raise FilterError(f"{name} must be in [-90, 90]; got {value!r}.")
+        for name, value in (("west", self.west), ("east", self.east)):
+            if not -180.0 <= value <= 180.0:
+                raise FilterError(f"{name} must be in [-180, 180]; got {value!r}.")
+        if self.south > self.north:
+            raise FilterError(
+                f"south ({self.south}) must not exceed north ({self.north}). "
+                "Latitude does not wrap; only longitude may cross the "
+                "antimeridian, which is written as west > east."
+            )
+
+    @property
+    def crosses_antimeridian(self) -> bool:
+        """Whether this box runs across +/-180 (that is, `west > east`)."""
+        return self.west > self.east
+
+    def contains(self, latitude: float, longitude: float) -> bool:
+        """Whether a point lies in the box; all four edges are inclusive."""
+        if not self.south <= latitude <= self.north:
+            return False
+        if self.crosses_antimeridian:
+            return longitude >= self.west or longitude <= self.east
+        return self.west <= longitude <= self.east
+
+
+def bounding_box(box: BoundingBox) -> Callable[[FilterableEvent], bool]:
+    """Accept events whose epicentre lies inside `box`, edges included."""
+
+    def predicate(event: FilterableEvent) -> bool:
+        return box.contains(event.latitude, event.longitude)
 
     return predicate
