@@ -176,7 +176,11 @@ def origin_time(
     whole_seconds, fraction = divmod(seconds, 1)
     try:
         return datetime(
-            *values,
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
             int(whole_seconds),
             int(fraction * 1_000_000),
             tzinfo=JST,
