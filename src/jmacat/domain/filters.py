@@ -162,3 +162,25 @@ def magnitude_range(
         return _passes_optional_range(event.magnitude, minimum=minimum, maximum=maximum)
 
     return predicate
+
+
+def depth_range(
+    *, minimum_km: float | None = None, maximum_km: float | None = None
+) -> Callable[[FilterableEvent], bool]:
+    """Accept events whose hypocentral depth lies in the closed interval.
+
+    Bounds are in kilometres and **inclusive**; either may be `None`.
+
+    **Missing depth: excluded while this filter is active**, on the same
+    reasoning as `magnitude_range`; see `_passes_optional_range`.
+
+    Depth 0 km is a real value in the catalog (`h1919` line 1130, the 1923
+    Kanto earthquake) and is never treated as absent.
+    """
+
+    def predicate(event: FilterableEvent) -> bool:
+        return _passes_optional_range(
+            event.depth_km, minimum=minimum_km, maximum=maximum_km
+        )
+
+    return predicate

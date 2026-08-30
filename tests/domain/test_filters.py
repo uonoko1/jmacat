@@ -9,6 +9,7 @@ import pytest
 
 from jmacat.domain.filters import (
     NaiveDatetimeError,
+    depth_range,
     magnitude_range,
     time_range,
 )
@@ -167,3 +168,45 @@ def test_magnitude_range_with_no_bounds_admits_a_missing_magnitude() -> None:
     nothing about the magnitude and must not drop records.
     """
     assert magnitude_range()(event(magnitude=None)) is True
+
+
+def test_depth_range_admits_an_event_inside_the_range() -> None:
+    predicate = depth_range(minimum_km=0.0, maximum_km=70.0)
+    assert predicate(event(depth_km=50.0)) is True
+
+
+def test_depth_range_rejects_a_deeper_event() -> None:
+    """`h2023` example E is a 105 km TANIMBAR IS. event; a shallow-only filter
+    must not admit it.
+    """
+    predicate = depth_range(maximum_km=70.0)
+    assert predicate(event(depth_km=105.0)) is False
+
+
+def test_depth_range_rejects_a_shallower_event() -> None:
+    predicate = depth_range(minimum_km=70.0)
+    assert predicate(event(depth_km=26.45)) is False
+
+
+def test_depth_range_is_inclusive_of_both_boundaries() -> None:
+    assert depth_range(maximum_km=50.0)(event(depth_km=50.0)) is True
+    assert depth_range(minimum_km=50.0)(event(depth_km=50.0)) is True
+
+
+def test_depth_range_admits_a_zero_depth_event() -> None:
+    """`h1919` line 1130, the 1923 Kanto earthquake, carries depth 0 km. Zero
+    is a real depth, not a missing value, and a `minimum_km=0.0` filter must
+    admit it rather than treating the falsy value as absent.
+    """
+    assert depth_range(minimum_km=0.0)(event(depth_km=0.0)) is True
+
+
+def test_depth_range_excludes_an_event_with_no_depth() -> None:
+    """Same policy as magnitude: an active depth filter excludes a record
+    whose depth is unknown.
+    """
+    assert depth_range(maximum_km=70.0)(event(depth_km=None)) is False
+
+
+def test_depth_range_with_no_bounds_admits_a_missing_depth() -> None:
+    assert depth_range()(event(depth_km=None)) is True
