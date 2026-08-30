@@ -139,15 +139,6 @@ def test_blank_decimal_longitude_minutes_decode_the_same_way() -> None:
     assert decimal_degrees(" 139", "30  ", field="longitude") == Decimal("139.5")
 
 
-def test_wholly_blank_minutes_are_rejected_rather_than_read_as_zero() -> None:
-    """Format doc, Traps 6 and 9: a wholly blank field is absent, not zero.
-
-    Distinguished from the blank-*decimals* case above. A coordinate needs its
-    minutes, so absence here is an error rather than a silent `35.000000`.
-    """
-    with pytest.raises(FieldError) as caught:
-        decimal_degrees(" 35", "    ", field="latitude")
-    assert caught.value.field == "latitude"
 
 
 def test_a_non_numeric_degree_field_names_the_field() -> None:
@@ -374,3 +365,27 @@ def test_an_impossible_calendar_date_is_rejected() -> None:
     with pytest.raises(FieldError) as caught:
         origin_time("2023", "01", "32", "00", "08", "0150")
     assert caught.value.field == "origin time"
+
+
+def test_blank_minutes_with_degrees_present_mean_whole_degree_precision() -> None:
+    """h1919: 7 records have degrees present and minutes c25-28 wholly blank.
+
+    Verbatim, the first of them (a 1923 Kanto aftershock, `SAGAMI BAY ?`):
+
+        J192309011201         35         13930        0     65J    325Y     ...
+
+    Latitude degrees c22-24 are ` 35` and minutes c25-28 `    `. All 7 carry
+    location precision `3` (fixed depth, human judgement) in c60.
+
+    The format doc does not describe this case: its Traps 9 contrasts "integer
+    present, decimals blank" with "the field blank in its entirety", but for
+    the *minutes* field it does not consider degrees present with minutes
+    wholly absent. The reading taken here is that the epicentre is known to the
+    whole degree - 35 degN - which is what the degree field says on its own.
+
+    Rejecting the record instead would discard 7 real epicentres over a
+    coarser precision, and substituting any non-zero minutes value would invent
+    a position JMA did not publish. `minutes_are_known` carries the reduced
+    precision so this does not masquerade as an exact 35.000000.
+    """
+    assert decimal_degrees(" 35", "    ", field="latitude") == Decimal(35)
