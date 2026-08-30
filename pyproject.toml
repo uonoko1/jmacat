@@ -50,6 +50,4 @@ select = [
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-# The guard walks source files that are never imported, so an untyped
-# third-party stub must never silently pass as Any.
 warn_unreachable = true
