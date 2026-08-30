@@ -74,8 +74,10 @@ mention the time zone at all — the English table is the only place JMA states 
 UTC; converting requires subtracting 9 hours.
 
 The specification does not scope the time zone by record type, so JST is taken to apply to `U`
-and `I` records too. Example G below is consistent with that reading. This is an inference from
-the note's placement, not an explicit JMA statement — see *Unresolved* item 1.
+and `I` records too. Examples G and I below are consistent with that reading, and both a `U`
+and an `I` record reproduce an external catalog's UTC time after subtracting 9 h. That the note
+applies to foreign records is still an inference from its placement rather than an explicit JMA
+statement — see *Unresolved* item 1.
 
 ## Field table
 
@@ -90,13 +92,13 @@ The "Type" column reproduces the specification's Fortran-style declaration.
 | 4 | Day | 08-09 | 2 | I2 | day (JST) | never blank | |
 | 5 | Hour | 10-11 | 2 | I2 | hour (JST) | never blank | |
 | 6 | Minute | 12-13 | 2 | I2 | minute (JST) | never blank | |
-| 7 | Second | 14-17 | 4 | F4.2 | s ×100 | decimals blank if hypocenter fixed | integer field; divide by 100 |
+| 7 | Second | 14-17 | 4 | F4.2 | s ×100 | decimals blank, or all blank, if hypocenter fixed | see *Traps* 9 — do not strip and divide |
 | 8 | Standard error of origin time | 18-21 | 4 | F4.2 | s ×100 | all blank | blank if hypocenter fixed, or if a Matched-filter template hypocenter was adopted |
 | 9 | Latitude, degrees | 22-24 | 3 | I3 | deg | never blank | signed; see *Traps* |
-| 10 | Latitude, minutes | 25-28 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 9 |
+| 10 | Latitude, minutes | 25-28 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 9; see *Traps* 9 |
 | 11 | Standard error of latitude | 29-32 | 4 | F4.2 | min ×100 | all blank | same blanking rule as field 8 |
 | 12 | Longitude, degrees | 33-36 | 4 | I4 | deg | never blank | signed; see *Traps* |
-| 13 | Longitude, minutes | 37-40 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 12 |
+| 13 | Longitude, minutes | 37-40 | 4 | F4.2 | min ×100 | decimals blank if hypocenter fixed | unsigned; sign lives in field 12; see *Traps* 9 |
 | 14 | Standard error of longitude | 41-44 | 4 | F4.2 | min ×100 | all blank | same blanking rule as field 8 |
 | 15 | Depth | 45-49 | 5 | F5.2 **or** I3,2X | km ×100 **or** km | — | **two mutually exclusive encodings**; see *Depth* |
 | 16 | Standard error of depth | 50-52 | 3 | F3.2 | km ×100 | all blank | blank unless the depth-free method was used; also blank for Matched-filter template hypocenters |
@@ -110,9 +112,9 @@ The "Type" column reproduces the specification's Fortran-style declaration.
 | 24 | Maximum intensity | 62 | 1 | A1 | JMA shindo | blank | see *Maximum intensity codes* |
 | 25 | Damage class | 63 | 1 | A1 | — | blank | Utsu scale; see *Damage and tsunami classes* |
 | 26 | Tsunami class | 64 | 1 | A1 | — | blank | see *Damage and tsunami classes* |
-| 27 | District number | 65 | 1 | I1 | — | — | geographical district, JMA Appendix 1.A.3 |
-| 28 | Region number | 66-68 | 3 | I3 | — | blank | epicentre region number |
-| 29 | Region name | 69-92 | 24 | A24 | — | (always populated in h2023) | ASCII, right-padded with spaces |
+| 27 | District number | 65 | 1 | I1 | — | blank | geographical district; see *District and region numbers* |
+| 28 | Region number | 66-68 | 3 | I3 | — | blank | epicentre region; see *District and region numbers* |
+| 29 | Region name | 69-92 | 24 | A24 | — | blank (553 records in `h1919`) | ASCII, right-padded with spaces |
 | 30 | Number of stations | 93-95 | 3 | I3 | count | blank | stations contributing to the determination |
 | 31 | Hypocenter determination flag | 96 | 1 | A1 | — | blank for non-JMA | see *Determination flag codes* |
 
@@ -569,11 +571,15 @@ blank(87). In `h1919`: `K`(19,957) `S`(7,621) blank(657) — only the manual cod
 for a hand-compiled era. `N` and `F` occur in neither corpus. Case is significant: `K` and `k` are different precisions, as are `S`/`s` and `A`/`a`.
 Never upper-case this field.
 
-## `J` versus `U` records
+## `J` versus `U` versus `I` records
 
 Record type (c01) is `J` for JMA-determined, `U` for USGS-determined and `I` for other
 international agencies (ISC, IASPEI …). `h2023` contains 256,933 `J` and 87 `U`; **no `I`
-record occurs in 2023**, but the specification documents `I` and a parser must accept it.
+record occurs in 2023**. `h1919` supplies the missing type: 27,577 `J` and 658 `I`, and no `U`
+at all. So each corpus lacks one of the three types and all three are attested across the pair.
+
+`I` records in `h1919` are foreign events (Example I's neighbours include Tonga, Colombia and
+China). All 553 blank region names in the corpus are `I` records; see *Unresolved* item 4.
 
 The layout is identical for all record types — no field moves. What differs is which fields
 are populated. Across all 87 `U` records in `h2023`:
@@ -689,51 +695,90 @@ Distinguish "integer present, decimals blank" (a real value at lower precision) 
 blank" (no value). See *Example I*, and note that zero records in `h2023` exercise either case,
 so a test suite built only on 2023 data will not catch this.
 
+## Resolved since the first draft
+
+Items 3, 5 and 8 of the original unresolved list are now closed, and items 1, 4 and 6 are
+partly closed. What closed them, in each case, was reading a second era of the catalog
+(`h1919`, covering 1919-1950) and finding the appendix under `catalog/appendix/`.
+
+| Was | Now |
+| --- | --- |
+| 3. District/region code lists not located | **Closed.** Appendix 1.A.3 found and cited; 269-entry mapping generated and validated against 256,868 records with zero mismatches. See *District and region numbers*. |
+| 5. Blank-decimal case never observed | **Closed.** `h1919` exhibits it in seconds, latitude minutes and longitude minutes. See *Example I* and *Traps* 9. |
+| 8. Record width verified only for 2023 | **Closed.** 96 bytes on every line of `h1919`, `h1995`, `h2019`, `h2023`. See *Record width is stable across eras*. |
+| 1. `I`-record time zone untested | **Mostly closed.** An `I` record now cross-checks against an external catalog; see item 1 below. |
+| 4. Region name never blank | **Answered, opposite to the 2023 guess.** It *can* be blank; see item 4 below. |
+| 6. Long list of unobserved codes | **Mostly closed.** Most now appear in `h1919`; the residue is item 6 below. |
+
 ## Unresolved
 
-Items that could not be confirmed from the specification or the 2023 data, listed here rather
-than guessed.
+Items that could not be confirmed from the specification or from either corpus, listed here
+rather than guessed.
 
-1. **Whether `U` and `I` origin times are also JST.** The specification's JST note is attached
-   to the Year field with "the same applies below", which grammatically covers the remaining
-   time fields, but no sentence scopes the time zone by record type. Example G corroborates JST
-   for a `U` record against an external catalog (record 10:17:34 JST minus 9 h equals the USGS
-   UTC origin time of 01:17:34 for the 2023 Turkey M7.8), so JST is well supported for `U`.
-   No `I` record exists in `h2023`, so `I` is untested. Treat all record types as JST.
+1. **Whether the JST note is stated to cover `U` and `I` records.** The specification's JST
+   note is attached to the Year field with "the same applies below", which grammatically covers
+   the remaining time fields, but no sentence scopes the time zone by record type. Both foreign
+   record types now cross-check against external catalogs, so this is an evidence gap rather
+   than a practical doubt:
+   - `U`: Example G, the 2023 Turkey M7.8 — record 10:17:34 JST minus 9 h equals the USGS UTC
+     origin time 01:17:34.
+   - `I`: `h1919` carries `I1920121621055446     365220     1053714     150    83W         9   W NEI MONGOL, CHINA`,
+     which decodes to 1920-12-16 21:05:54.46 JST, 36.870 degN 105.619 degE, 15 km, M8.3. Minus
+     9 h that is 12:05:54 UTC on 1920-12-16 — the Haiyuan earthquake, conventionally dated
+     1920-12-16 12:05 UTC at about 36.6 degN 105.3 degE, M8.3.
+
+   Treat all record types as JST.
 
 2. **The exact rounding/truncation JMA applies** when converting internal precision to the
    hundredths-of-a-minute and hundredths-of-a-km fields. Not stated. Round-tripping a decoded
    coordinate back to the file may differ in the last digit.
 
-3. **District number (field 27) and region number (field 28) code lists.** The specification
-   refers to "Appendix 1.A.3 Geographical region names", which is not on the format page and
-   was not located. Nine district values (`1`-`9`) occur in `h2023`; the mapping from number
-   to name is unknown. The 24-character region *name* (field 29) is present on every record, so
-   this only blocks validating the numeric codes, not naming the region.
+3. **Which district numbers exist beyond the appendix's `1`-`8`, and what `8`/`400` means.**
+   The appendix defines districts `1`-`8` and 269 regions, and that mapping reproduces every
+   non-blank record in both corpora. Two usages are outside it: district `9` (73 `U` records in
+   `h2023`, 3 in `h1919`), which has no appendix page at all, and district `8` region `400` =
+   `FAR FIELD` (65 records in `h2023`, 31 in `h1919`), which is not in the district 8 table.
+   Both evidently mark events outside the Japan-centred region scheme, but the appendix does
+   not document either. Do not treat the 269 entries as exhaustive.
 
-4. **Whether region name (field 29) can be blank.** It is populated on all 257,020 records in
-   `h2023`. The specification gives no null representation. Do not assume it is never blank in
-   other years.
+4. **Under what conditions the region name (field 29) is blank.** It is populated on all
+   257,020 records of `h2023` but blank on 553 records of `h1919` — every one of them an `I`
+   record whose district (c65) and region number (c66-68) are blank as well, so the whole
+   region block is absent together. The specification gives no null representation and does not
+   say when it applies. A parser must accept a blank region name and must not key on it.
 
-5. **The "blank after the decimal point in case of fixed hypocenter" case for seconds and for
-   latitude/longitude minutes** (fields 7, 10, 13). The specification documents it, but **zero
-   records in `h2023` exhibit it** — c16-17, c27-28 and c39-40 are digits on every record.
-   The encoding is therefore documented but not empirically confirmed here; it presumably
-   appears in older years containing fixed hypocenters. A parser must handle a partially blank
-   field without assuming what `h2023` shows.
+5. **The exact semantics of a blank decimal part.** `h1919` shows it (see *Traps* 9), and the
+   specification calls it "blank after the decimal point in case of fixed hypocenter", so the
+   decoding is settled: the integer part is the value and the decimals are unknown. What is not
+   stated is whether the true value is exactly the integer or merely rounded to it — i.e.
+   whether `06  ` means exactly 6.00 min or 6 min to the nearest minute. This matters only for
+   error bars, not for the decoded coordinate, but a parser should carry the reduced precision
+   rather than presenting 6.00 as if it had two significant decimals.
 
-6. **Codes documented but absent from `h2023`**, so their real-world formatting is unverified:
-   record type `I`; magnitude type `J`; magnitudes `B*` and `C*`; travel-time tables `1`-`4`
-   and `6`; location precision `4`, `5`, `7`, `8`, `9`; subsidiary information `2` and `3`;
-   maximum intensity `5`, `6`, `7`, `C`, `R`, `M`, `S`, `L`, `F`, `X`; damage classes `4`, `5`,
-   `6`, `X`, `Y`; tsunami classes `T`, `3`-`6`; determination flags `N` and `F`. All are taken
-   from the specification and should be accepted by the parser, but no `h2023` example backs
-   them.
+6. **Codes documented but absent from both `h2023` and `h1919`.** The historical corpus
+   supplied record type `I`, magnitude type `J`, travel-time table `1`, location precision `5`
+   and `7`, maximum intensity `5`, `6` and `X`, damage classes `4`, `5`, `6` and `Y`, and
+   tsunami class `T`. What remains unobserved in either era:
 
-7. **Character encoding of the region name in non-2023 years.** `h2023` is pure ASCII. The
-   specification says `A24` without naming an encoding. Older files were not checked.
+   | Field | Still unobserved |
+   | --- | --- |
+   | Magnitude 1/2 (c53-54, c56-57) | `B*` and `C*` (M-2.x and M-3.x); only `-n` and `A*` occur |
+   | Travel time table (c59) | `2`, `3`, `4`, `6` |
+   | Location precision (c60) | `4`, `8`, `9` |
+   | Subsidiary information (c61) | `3` |
+   | Maximum intensity (c62) | `7`, `C`, `R`, `M`, `S`, `L`, `F` |
+   | Damage class (c63) | `X` |
+   | Tsunami class (c64) | `3`, `4`, `5`, `6` |
+   | Determination flag (c96) | `N`, `F` |
 
-8. **Whether any year's file contains records that are not exactly 96 bytes** (for example a
-   trailing partial line or a differing historical layout). Only `h2023` was verified.
-   The specification's per-era notes on depth-slice widths imply the layout has been stable,
-   but files back to 1919 are published and were not inspected.
+   Every documented record type and magnitude type is now observed. The residue is plausible:
+   the missing travel-time and precision codes are regional or mid-era, the missing intensity
+   codes are pre-1977 or shindo 7 (rare), and tsunami `3`-`6` describe events larger than any
+   in these two corpora. All are specified and must be accepted by the parser; they simply have
+   no worked example here. Note the years 1951-1994 and 1996-2018 remain unsampled, so some of
+   these are likely observable without any new source.
+
+7. **Character encoding of the region name in unsampled years.** `h2023`, `h2019`, `h1995` and
+   `h1919` are pure ASCII (no byte above 0x7F). The specification says `A24` without naming an
+   encoding. The intervening years were not checked, though four samples spanning 1919-2023
+   make a non-ASCII year unlikely.
