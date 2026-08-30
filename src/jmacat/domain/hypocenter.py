@@ -126,12 +126,19 @@ def decimal_degrees(
     fraction = _fixed_point(minutes, field=field, columns=minute_columns)
     if fraction is None:
         # Degrees present, minutes wholly blank: the epicentre is published to
-        # the whole degree. Seven h1919 records do this, all with location
-        # precision `3` (fixed depth, human judgement). The format doc does not
-        # cover it - its Traps 9 contrasts blank decimals with a wholly blank
-        # field, but not a blank minutes field beside a populated degree field.
+        # the whole degree. Seven h1919 records do this for latitude and four
+        # for longitude, all with location precision `3` (fixed depth, human
+        # judgement). The format doc does not cover it - its Traps 9 contrasts
+        # blank decimals with a wholly blank field, but not a blank minutes
+        # field beside a populated degree field.
         # Rejecting would discard real epicentres over a coarser precision;
         # `minutes_are_known` on the record carries the lost precision instead.
+        # The returned value is indistinguishable from a whole-degree
+        # determination, so that flag is the caller's only warning - see
+        # `Hypocenter.latitude_minutes_are_known`.
+        # The sign still applies: no record yet combines a negative degree with
+        # blank minutes, but h1919 holds 344 negative latitude and 170 negative
+        # longitude degree fields, and dropping it would flip a hemisphere.
         return sign * whole
     if fraction >= MINUTES_PER_DEGREE:
         raise FieldError(
@@ -342,13 +349,29 @@ class Hypocenter:
     latitude_minutes_are_known: bool
     """False when c25-28 was wholly blank: the epicentre is whole-degree only.
 
-    Seven h1919 records are published this way. Without the flag a latitude of
-    exactly 35 would be indistinguishable from a determination of 35 deg 00.00
-    min, an accuracy claim JMA did not make.
+    Seven h1919 records are published this way; four more have the longitude
+    minutes blank instead, and the two fields are blanked independently, so
+    neither flag can be derived from the other.
+
+    **This flag is the only discriminator, and the guarantee is soft.** The
+    `Decimal("35")` decoded from a whole-degree record is identical to the
+    `Decimal("35")` decoded from a genuine 35 deg 00.00 min determination -
+    identical by value and by `repr`, with nothing in the number itself to
+    separate them. A caller that reads `latitude` and ignores this flag gets a
+    silently over-precise coordinate: a claim to the hundredth of a minute,
+    about 15 m, where JMA published only the whole degree, about 100 km.
+
+    Carrying the flag rather than, say, rounding or widening the type is a
+    deliberate trade - see `decimal_degrees` - but it does place the burden on
+    the caller, and no type error marks a caller that drops it.
     """
     longitude: Decimal
     longitude_minutes_are_known: bool
-    """False when c37-40 was wholly blank. See `latitude_minutes_are_known`."""
+    """False when c37-40 was wholly blank; 4 records in h1919.
+
+    See `latitude_minutes_are_known`, including its warning that the flag is
+    the only thing distinguishing a whole-degree longitude from a precise one.
+    """
     depth_km: Decimal | None
     magnitude: Decimal | None
     magnitude_type: str | None
