@@ -8,12 +8,12 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from jmacat.domain.filters import (
-    _dms,
     BoundingBox,
     FilterableEvent,
     FilterError,
     NaiveDatetimeError,
     UnknownAreaError,
+    _dms,
     all_of,
     available_area_names,
     bounding_box,

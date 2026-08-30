@@ -318,14 +318,55 @@ class UnknownAreaError(FilterError):
     """
 
 
-def _dms(degrees: int, minutes: int, seconds: float) -> float:
+def _dms(
+    degrees: int, minutes: int, seconds: float, *, negative: bool = False
+) -> float:
     """Degrees/minutes/seconds to signed decimal degrees.
 
     The published prefecture extents are given in DMS; converting here rather
     than committing pre-rounded decimals keeps each number visibly traceable
     to the figure in the citation.
+
+    `degrees`, `minutes` and `seconds` are **magnitudes and must not be
+    negative**; the hemisphere is carried by `negative=` instead. Passing a
+    negative degrees value raises `FilterError`.
+
+    Why the sign is a separate argument rather than a sign on `degrees`. The
+    sign belongs to the whole angle, not to its first term: 30 deg 12' 41" S
+    is -30.211389, and negating only the degrees gives -29.788611, an error of
+    0.42 deg — about 47 km of latitude. That much is fixable by negating the
+    sum. What is not fixable that way is `-0`: a coordinate between the
+    equator and 1 deg S, such as -0 deg 30', has degrees zero, and Python's
+    `int` has no negative zero, so `-0 == 0` and the hemisphere is already
+    lost before this function is called. A separate flag is the only encoding
+    in which `_dms(0, 30, 0, negative=True) == -0.5` can be written at all.
+
+    All four Ishikawa edges are positive, so no box in `NAMED_AREAS` presently
+    exercises the negative path. It is enforced here because `NAMED_AREAS` is
+    an extension point: `h2023` holds real southern- and western-hemisphere
+    records (the Kermadec-Tonga-Fiji cluster, down to -179.374 deg), so the
+    first area added there would otherwise get a silently displaced box.
+
+    Raises:
+        FilterError: any of `degrees`, `minutes`, `seconds` is negative.
     """
-    return degrees + minutes / 60 + seconds / 3600
+    if degrees < 0:
+        raise FilterError(
+            f"degrees must not be negative; got {degrees!r}. Pass the magnitude "
+            "with negative=True for a southern latitude or western longitude. "
+            "A sign on degrees cannot express -0 deg (a coordinate south of the "
+            "equator or west of Greenwich by less than one degree), because "
+            "-0 == 0 for int."
+        )
+    for name, value in (("minutes", minutes), ("seconds", seconds)):
+        if value < 0:
+            raise FilterError(
+                f"{name} must not be negative; got {value!r}. Minutes and "
+                "seconds are magnitudes; the hemisphere is carried by "
+                "negative=."
+            )
+    magnitude = degrees + minutes / 60 + seconds / 3600
+    return -magnitude if negative else magnitude
 
 
 #: Named areas, each an **approximate rectangle**, not a boundary.
