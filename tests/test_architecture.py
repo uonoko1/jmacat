@@ -6,6 +6,10 @@
 `domain/` may import the standard library only. `domain/` and `usecase/` may
 never import `jmacat.infrastructure` or `jmacat.controller`. Convention is not
 enough: this walks the AST of every module under `src/jmacat/`.
+
+Known limitation: only `import` and `from ... import` statements are seen, so
+dynamic imports (`importlib.import_module(...)`, `__import__(...)`) are not
+detected.
 """
 
 from __future__ import annotations
@@ -20,13 +24,31 @@ PACKAGE = "jmacat"
 
 
 def imported_modules(tree: ast.AST, *, package: str) -> list[str]:
-    """Absolute dotted names imported by `tree`, whose module lives in `package`."""
+    """Absolute dotted names imported by `tree`, whose module lives in `package`.
+
+    An `ImportFrom` reports its module *and*, when that module is one of ours,
+    each name imported from it: `from jmacat import infrastructure` reaches
+    `jmacat.infrastructure`, and only the dotted form carries a layer. The
+    bare module is kept because it is what the third-party check reads.
+
+    Names are only appended for our own package, where a layer can be read off
+    them. A `from pyarrow import Table` or `from datetime import timezone`
+    stays a single bare module, so no import is reported twice and no imported
+    symbol is mistaken for a module.
+    """
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            found.append(_absolute(node, package=package))
+            module = _absolute(node, package=package)
+            found.append(module)
+            if module.split(".")[0] == PACKAGE:
+                found.extend(
+                    f"{module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
     return found
 
 
@@ -109,20 +131,34 @@ def test_from_import_is_reported() -> None:
 
 
 def test_relative_import_is_resolved_against_the_containing_package() -> None:
-    """`from .record import X` inside jmacat.domain is jmacat.domain.record."""
+    """`from .record import X` inside jmacat.domain is jmacat.domain.record.
+
+    The imported name is reported under it too; `Hypocenter` is a class rather
+    than a submodule, but it inherits its module's layer, so it cannot change
+    how the import is classified.
+    """
     tree = ast.parse("from .record import Hypocenter")
-    assert imported_modules(tree, package="jmacat.domain") == ["jmacat.domain.record"]
+    assert imported_modules(tree, package="jmacat.domain") == [
+        "jmacat.domain.record",
+        "jmacat.domain.record.Hypocenter",
+    ]
 
 
 def test_parent_relative_import_climbs_one_package_per_dot() -> None:
     tree = ast.parse("from ..infrastructure import http")
-    assert imported_modules(tree, package="jmacat.usecase") == ["jmacat.infrastructure"]
+    assert imported_modules(tree, package="jmacat.usecase") == [
+        "jmacat.infrastructure",
+        "jmacat.infrastructure.http",
+    ]
 
 
 def test_bare_parent_relative_import_names_the_parent_package() -> None:
     """`from .. import x` inside jmacat.usecase.ports refers to jmacat.usecase."""
     tree = ast.parse("from .. import interactor")
-    assert imported_modules(tree, package="jmacat.usecase.ports") == ["jmacat.usecase"]
+    assert imported_modules(tree, package="jmacat.usecase.ports") == [
+        "jmacat.usecase",
+        "jmacat.usecase.interactor",
+    ]
 
 
 def test_from_import_of_a_submodule_yields_the_submodule() -> None:
