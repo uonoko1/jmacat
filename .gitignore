@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Never commit catalog data (JMA terms: fetch at run time, do not redistribute)
+*.zip
+h[0-9][0-9][0-9][0-9]
+data/
+.jmacat-cache/
