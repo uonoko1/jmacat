@@ -264,12 +264,17 @@ def report(result: ExportResult) -> list[str]:
     Separate from the command so it can be tested as a pure function of a
     result, and so an SDK caller can print the same summary.
 
-    Counts are grouped by filter, and the missing-value exclusion is on its own
-    line **and only when it is non-zero**: a line that always appeared would
-    tell every user the same thing and stop carrying information. Issue #20
-    exists because 41.2 per cent of the pre-war corpus disappears from an
-    `--min-magnitude` run for want of a magnitude, and a user who is told only
-    the selected count cannot see it.
+    **Selected is reported once, not per filter.** The outcome counts partition
+    the input — a record is attributed to the first filter that rejects it — so
+    there is exactly one selected count for the run, and printing it under each
+    filter would read as though every filter had independently selected that
+    many.
+
+    The missing-value exclusion gets its own line, and **only when it is
+    non-zero**: a line that always appeared would tell every user the same
+    thing and stop carrying information. Issue #20 exists because 41.2 per cent
+    of the pre-war corpus vanishes from an `--min-magnitude` run for want of a
+    magnitude, and a user told only the selected count cannot see it.
     """
     lines = [
         f"Wrote {result.records_written:,} events to {result.destination} "
@@ -282,22 +287,29 @@ def report(result: ExportResult) -> list[str]:
             f"not written."
         )
         lines.extend(f"  {reason}" for reason in result.rejections)
-    for outcome in result.filter_outcomes:
-        lines.append(f"{outcome.name} filter:")
-        lines.append(f"  {result.records_written:,} selected")
-        if outcome.excluded_by_comparison:
-            lines.append(
-                f"  {outcome.excluded_by_comparison:,} excluded by the "
-                f"{outcome.name} range"
-            )
-        if outcome.excluded_missing_value:
-            share = outcome.excluded_missing_value / result.records_read * 100
-            lines.append(
-                f"  {outcome.excluded_missing_value:,} excluded for a missing "
-                f"{outcome.name} ({share:.1f}% of the records read) — these "
-                f"records carry no {outcome.name} at all, so the filter could "
-                f"not judge them"
-            )
+    if result.filter_outcomes:
+        lines.append(f"{result.records_written:,} selected after filtering:")
+        for outcome in result.filter_outcomes:
+            if outcome.excluded_by_comparison:
+                lines.append(
+                    f"  {outcome.excluded_by_comparison:,} excluded by {outcome.name}"
+                )
+            if outcome.excluded_missing_value:
+                share = outcome.excluded_missing_value / result.records_read * 100
+                lines.append(
+                    f"  {outcome.excluded_missing_value:,} excluded for a "
+                    f"missing {outcome.name} ({share:.1f}% of the records "
+                    f"read) — these records carry no {outcome.name} at all, "
+                    f"so the filter could not judge them"
+                )
+        # The identity is printed so a reader can check it rather than take the
+        # numbers on trust; a run whose counts did not reconcile would be a bug
+        # in the attribution, and this is where it would show.
+        lines.append(
+            f"  ({result.records_written:,} + {result.records_excluded:,} "
+            f"excluded + {result.records_rejected:,} unparsed "
+            f"= {result.records_read:,} read)"
+        )
     return lines
 
 

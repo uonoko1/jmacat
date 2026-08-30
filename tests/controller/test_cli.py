@@ -87,9 +87,9 @@ def test_the_report_names_all_three_counts_separately(
     )
 
     assert result.exit_code == 0, result.output
-    assert "1 selected" in result.output
+    assert "1 selected after filtering" in result.output
     assert "1 excluded for a missing magnitude" in result.output
-    assert "1 excluded by the magnitude range" in result.output
+    assert "1 excluded by magnitude" in result.output
 
 
 def test_the_missing_value_line_is_absent_when_an_active_filter_drops_none(
@@ -126,7 +126,7 @@ def test_the_missing_value_line_is_absent_when_an_active_filter_drops_none(
 
     assert result.exit_code == 0, result.output
     # The filter ran and rejected M2.0 by comparison ...
-    assert "1 excluded by the magnitude range" in result.output
+    assert "1 excluded by magnitude" in result.output
     # ... but nothing for absence, so that line must be absent too.
     assert "missing magnitude" not in result.output
 
