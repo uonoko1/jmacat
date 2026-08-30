@@ -1,0 +1,347 @@
+"""The export interactor, driven entirely through the in-memory port fakes.
+
+No network, no filesystem. Every record line here is **verbatim from the
+published catalog** (`h1919` and `h2023`), as CONTRIBUTING requires: a synthetic
+96-byte line would let a column mistake in the test agree with a column mistake
+in the code.
+
+The counts these tests assert are derived from those same real lines, by
+inspection of the fields quoted beside each constant, never from running the
+code and copying what it printed.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from jmacat.domain.filters import UnknownAreaError
+from jmacat.domain.hypocenter import Hypocenter, parse_record
+from jmacat.usecase.errors import CatalogYearUnavailableError, EventWriterError
+from jmacat.usecase.export import ExportRequest, OutputFormat, export
+from tests.fakes import (
+    FailingEventWriter,
+    InMemoryCatalogSource,
+    InMemoryEventWriter,
+    UnavailableYearCatalogSource,
+)
+
+# Real records, verbatim from the published `h1919` archive (1919-1950), each
+# cited by its line number. Synthetic 96-byte lines are avoided deliberately: a
+# column mistake invented in a test would agree with the same mistake in the
+# code and prove nothing.
+#
+# Chosen so that one magnitude filter produces all three outcomes at once.
+
+#: h1919 line 38. M6.1, SE OFF TOKACHI; above every bound used here.
+M61 = "J1919031219312449 049 413032 193 1441504 352  0     61J   5211  1 28SE OFF TOKACHI            9K"
+
+#: h1919 line 408. M3.0, NW GUNMA PREF; sits exactly on the `minimum=3.0`
+#: bound, which the closed range must keep.
+M30 = "J1921011809505958 227 362422     1383157      0     30J   571   3 81NW GUNMA PREF             2S"
+
+#: h1919 line 3346. M2.0, NORTHERN KYOTO PREF; below the bound, so an ordinary
+#: comparison failure.
+M20 = "J1927032408565221 004 353142 076 1351558 087 12     20J   151   5182NORTHERN KYOTO PREF       4K"
+
+#: h1919 line 4. Magnitude columns 53-54 are blank: no magnitude was ever
+#: determined. 11,621 of the 28,235 h1919 records look like this.
+BLANK_MAGNITUDE = "J1919010518532883 087 372982 273 1383601 165  4           5711  4132MID NIIGATA PREF          5S"
+
+#: h1919 line 125. M3.1 - the bound CONTRIBUTING names as the one a raw float
+#: comparison gets wrong, where `Decimal("3.1") >= 3.1` is False.
+M31 = "J1919071919042792 048 360326 414 1401658 289 72     31d   5211  3 87SOUTHERN IBARAKI PREF    10K"
+
+#: h1919 line 284. 36.239N 137.080E, inside the approximate Ishikawa box.
+#: Its region is TOYAMA GIFU BORDER REG rather than an Ishikawa name, which is
+#: the documented limitation of a rectangle standing in for a prefecture; the
+#: filter tests the coordinate, and so does this test.
+INSIDE_ISHIKAWA = "J1920052903245705 078 361432 300 1370482 345  2     45J   5211  4142TOYAMA GIFU BORDER REG   14K"
+
+
+def _writer() -> InMemoryEventWriter[Hypocenter]:
+    return InMemoryEventWriter[Hypocenter]()
+
+
+def _request(tmp_path: Path, **kwargs: object) -> ExportRequest:
+    defaults: dict[str, object] = {
+        "year": 1919,
+        "destination": tmp_path / "events.parquet",
+    }
+    defaults.update(kwargs)
+    return ExportRequest(**defaults)  # type: ignore[arg-type]
+
+
+def test_every_record_of_an_unfiltered_year_is_written(tmp_path: Path) -> None:
+    source = InMemoryCatalogSource({1919: [M61, M30, M20, BLANK_MAGNITUDE]})
+    writer = _writer()
+
+    result = export(_request(tmp_path), source=source, writer=writer)
+
+    assert result.records_read == 4
+    assert result.records_written == 4
+    assert len(writer.events) == 4
+
+
+def test_an_unfiltered_run_admits_the_record_with_no_magnitude(
+    tmp_path: Path,
+) -> None:
+    """A filter that is not applied drops nothing, blank field or not.
+
+    The counterpart to the exclusion tests below: the loss is caused by the
+    filter, not by the record being incomplete.
+    """
+    source = InMemoryCatalogSource({1919: [BLANK_MAGNITUDE]})
+    writer = _writer()
+
+    result = export(_request(tmp_path), source=source, writer=writer)
+
+    assert writer.events[0].magnitude is None
+    assert result.records_written == 1
+    assert result.records_excluded_for_a_missing_value == 0
+
+
+def test_a_magnitude_bound_separates_the_two_reasons_a_record_is_dropped(
+    tmp_path: Path,
+) -> None:
+    """The heart of issue #20.
+
+    Of the four real records, `minimum=3.0` keeps M6.1 and M3.0 (the bound is
+    inclusive), drops M2.0 for being too small, and drops the blank one for
+    having no magnitude at all. The two rejections must not be reported as one
+    number: they mean opposite things to a researcher.
+    """
+    source = InMemoryCatalogSource({1919: [M61, M30, M20, BLANK_MAGNITUDE]})
+    writer = _writer()
+
+    result = export(_request(tmp_path, min_magnitude=3.0), source=source, writer=writer)
+
+    (magnitude,) = result.filter_outcomes
+    assert magnitude.name == "magnitude"
+    assert result.records_written == 2
+    assert magnitude.excluded_by_comparison == 1
+    assert magnitude.excluded_missing_value == 1
+
+
+def test_the_missing_value_count_tracks_the_number_of_blank_records(
+    tmp_path: Path,
+) -> None:
+    """Triangulation: the count is counted, not a constant that happens to fit.
+
+    Two runs differing only in how many blank-magnitude records the catalog
+    holds must report two different missing-value counts. A hardcoded 1, or a
+    count that actually measures the comparison failures, fails here.
+    """
+    writer_one = _writer()
+    writer_three = _writer()
+
+    one = export(
+        _request(tmp_path, min_magnitude=3.0),
+        source=InMemoryCatalogSource({1919: [M61, BLANK_MAGNITUDE]}),
+        writer=writer_one,
+    )
+    three = export(
+        _request(tmp_path, min_magnitude=3.0),
+        source=InMemoryCatalogSource(
+            {1919: [M61, BLANK_MAGNITUDE, BLANK_MAGNITUDE, BLANK_MAGNITUDE]}
+        ),
+        writer=writer_three,
+    )
+
+    assert one.records_excluded_for_a_missing_value == 1
+    assert three.records_excluded_for_a_missing_value == 3
+    # The comparison count is held fixed across the pair, so the difference
+    # above can only come from the missing-value attribution.
+    assert one.filter_outcomes[0].excluded_by_comparison == 0
+    assert three.filter_outcomes[0].excluded_by_comparison == 0
+
+
+def test_a_bound_no_float_can_represent_still_keeps_the_record_on_it(
+    tmp_path: Path,
+) -> None:
+    """`minimum=3.0` is one of the few bounds a raw float compares correctly.
+
+    CONTRIBUTING records a sprint-2 measurement that passed only because it
+    used 3.0. This is the same request at a bound where a float comparison
+    fails — `Decimal("3.0") >= 3.1` reasoning breaks at 3.1 — so a future
+    change that stopped normalising the bound would be caught here rather than
+    silently dropping every record sitting exactly on it.
+    """
+    on_the_bound = parse_record(M31)
+    assert on_the_bound.magnitude == Decimal("3.1")
+
+    source = InMemoryCatalogSource({1919: [M31]})
+    writer = _writer()
+
+    result = export(_request(tmp_path, min_magnitude=3.1), source=source, writer=writer)
+
+    assert result.records_written == 1
+
+
+def test_a_line_that_cannot_be_parsed_is_counted_and_described(
+    tmp_path: Path,
+) -> None:
+    """A malformed line must neither abort the year nor vanish from the report."""
+    truncated = M61[:40]
+    source = InMemoryCatalogSource({1919: [M61, truncated, M30]})
+    writer = _writer()
+
+    result = export(_request(tmp_path), source=source, writer=writer)
+
+    assert result.records_read == 3
+    assert result.records_written == 2
+    assert result.records_rejected == 1
+    assert result.rejections  # the reason, not only the count
+    assert "40" in result.rejections[0]
+
+
+def test_the_counts_account_for_every_record_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """read == written + rejected + excluded, with all three non-zero.
+
+    An identity that held only because two of its terms were zero would prove
+    nothing, so this run produces a parse failure, both kinds of exclusion and
+    a written record at the same time.
+    """
+    source = InMemoryCatalogSource({1919: [M61, M20, BLANK_MAGNITUDE, M61[:40]]})
+    writer = _writer()
+
+    result = export(_request(tmp_path, min_magnitude=3.0), source=source, writer=writer)
+
+    assert result.records_written == 1
+    assert result.records_rejected == 1
+    assert result.records_excluded == 2
+    assert result.reconciles()
+
+
+def test_an_unavailable_year_reaches_the_caller(tmp_path: Path) -> None:
+    """The 404 must surface here, not become an empty output file."""
+    source = UnavailableYearCatalogSource()
+    writer = _writer()
+
+    with pytest.raises(CatalogYearUnavailableError) as raised:
+        export(_request(tmp_path, year=2024), source=source, writer=writer)
+
+    assert raised.value.year == 2024
+    assert not writer.events
+
+
+def test_an_unavailable_year_fails_before_anything_is_written(
+    tmp_path: Path,
+) -> None:
+    """Availability is resolved at the call, so no partial output is produced."""
+    writer = _writer()
+
+    with pytest.raises(CatalogYearUnavailableError):
+        export(
+            _request(tmp_path, year=2024),
+            source=UnavailableYearCatalogSource(),
+            writer=writer,
+        )
+
+    assert writer.events == []
+
+
+def test_a_destination_that_rejects_every_write_reaches_the_caller(
+    tmp_path: Path,
+) -> None:
+    source = InMemoryCatalogSource({1919: [M61]})
+    writer: FailingEventWriter[Hypocenter] = FailingEventWriter()
+
+    with pytest.raises(EventWriterError):
+        export(_request(tmp_path), source=source, writer=writer)
+
+
+def test_an_unknown_area_fails_before_the_catalog_is_fetched(
+    tmp_path: Path,
+) -> None:
+    """A misspelt area must not cost a 25 MB download, nor return zero events."""
+    source = InMemoryCatalogSource({1919: [M61]})
+    writer = _writer()
+
+    with pytest.raises(UnknownAreaError) as raised:
+        export(_request(tmp_path, area="ishikaw"), source=source, writer=writer)
+
+    assert "ishikawa" in str(raised.value)
+    assert source.requested_years == []
+
+
+def test_a_known_area_selects_by_the_epicentre(tmp_path: Path) -> None:
+    """The Ishikawa box admits the Noto record and rejects the Gifu one.
+
+    Both are real h1919 lines; their coordinates are in the constants above.
+    """
+    source = InMemoryCatalogSource({1919: [INSIDE_ISHIKAWA, M20]})
+    writer = _writer()
+
+    result = export(_request(tmp_path, area="ishikawa"), source=source, writer=writer)
+
+    assert result.records_written == 1
+    assert writer.events[0].region_name is not None
+    (area,) = result.filter_outcomes
+    assert area.excluded_by_comparison == 1
+    # A coordinate is never blank on a parsed record, so an area filter can
+    # exclude nothing for absence.
+    assert area.excluded_missing_value == 0
+
+
+def test_the_catalog_is_streamed_rather_than_materialised(
+    tmp_path: Path,
+) -> None:
+    """The interactor must not list the year before writing the first row.
+
+    `InMemoryEventWriter.write_many` iterates its argument; a `list(...)` in
+    the interactor would still pass every count assertion above, so laziness
+    is asserted directly, by observing that the source has yielded nothing at
+    the moment the interactor hands the writer its iterator.
+    """
+    observed: list[int] = []
+    source = InMemoryCatalogSource({1919: [M61, M30, M20]})
+
+    class ObservingWriter(InMemoryEventWriter[Hypocenter]):
+        def write_many(self, events: object) -> None:  # type: ignore[override]
+            observed.append(source.lines_yielded)
+            super().write_many(events)  # type: ignore[arg-type]
+
+    writer = ObservingWriter()
+    export(_request(tmp_path), source=source, writer=writer)
+
+    assert observed == [0]
+    assert source.lines_yielded == 3
+
+
+def test_the_result_carries_back_what_was_asked_for(tmp_path: Path) -> None:
+    """The CLI formats its report off the result alone, so it must be complete."""
+    destination = tmp_path / "events.csv"
+    source = InMemoryCatalogSource({1919: [M61]})
+
+    result = export(
+        ExportRequest(
+            year=1919, destination=destination, output_format=OutputFormat.CSV
+        ),
+        source=source,
+        writer=_writer(),
+    )
+
+    assert result.year == 1919
+    assert result.destination == destination
+    assert result.output_format is OutputFormat.CSV
+
+
+def test_the_interactor_does_not_close_the_writer_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """Lifetime belongs to the caller's `with`, which is what discards a partial
+    file on the error path. Closing here would publish the destination before
+    the caller's cleanup had a say."""
+    writer = _writer()
+    export(
+        _request(tmp_path),
+        source=InMemoryCatalogSource({1919: [M61]}),
+        writer=writer,
+    )
+
+    assert not writer.closed
