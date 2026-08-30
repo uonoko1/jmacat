@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from jmacat.domain.filters import (
+    _dms,
     BoundingBox,
     FilterableEvent,
     FilterError,
@@ -428,3 +429,71 @@ def test_all_of_composes_the_whole_issue_example() -> None:
         magnitude=0.3,
     )
     assert predicate(too_small) is False
+
+
+# --- _dms: DMS to signed decimal degrees ------------------------------------
+
+
+def test_dms_converts_a_northern_hemisphere_extent() -> None:
+    """Ishikawa's north extent, 37 deg 51' 28" N, published by the prefecture
+    (source: GSI). 37 + 51/60 + 28/3600 = 37.858(3).
+    """
+    assert _dms(37, 51, 28) == pytest.approx(37.857778, abs=5e-7)
+
+
+def test_dms_converts_an_eastern_hemisphere_extent() -> None:
+    """Ishikawa's west extent, 136 deg 14' 35" E. 136 + 14/60 + 35/3600."""
+    assert _dms(136, 14, 35) == pytest.approx(136.243056, abs=5e-7)
+
+
+def test_dms_applies_the_sign_to_minutes_and_seconds_in_the_south() -> None:
+    """A southern latitude is a whole magnitude negated, not a negative degree
+    with positive minutes added back.
+
+    30 deg 12' 41" S is -30.211389, not -29.788611; the two differ by 0.42 deg,
+    about 47 km of latitude. `h2023` holds real southern-hemisphere records
+    (the Kermadec-Tonga-Fiji cluster), so a `NAMED_AREAS` box drawn there must
+    not be silently 47 km out.
+    """
+    assert _dms(30, 12, 41, negative=True) == pytest.approx(-30.211389, abs=5e-7)
+
+
+def test_dms_applies_the_sign_to_minutes_and_seconds_in_the_west() -> None:
+    """7 deg 3' 31" W is -7.058611, not -6.941389 - about 13 km of longitude
+    at the equator.
+    """
+    assert _dms(7, 3, 31, negative=True) == pytest.approx(-7.058611, abs=5e-7)
+
+
+def test_dms_expresses_a_coordinate_just_south_of_the_equator() -> None:
+    """-0 deg 30' is a real coordinate half a degree south of the equator.
+
+    It cannot be written by negating the degrees term: Python's `int` has no
+    negative zero, so `-0 == 0`. The `negative=` flag carries the hemisphere
+    independently of the degrees value, which is what makes this case
+    expressible at all.
+    """
+    assert _dms(0, 30, 0, negative=True) == pytest.approx(-0.5, abs=5e-7)
+    assert _dms(0, 30, 0) == pytest.approx(0.5, abs=5e-7)
+
+
+def test_dms_rejects_a_negative_degrees_argument() -> None:
+    """Negative degrees are refused rather than interpreted, because `-0`
+    cannot express the southern side of the equator. The error must name the
+    constraint and the replacement.
+    """
+    with pytest.raises(FilterError) as excinfo:
+        _dms(-30, 12, 41)
+    message = str(excinfo.value)
+    assert "negative=True" in message
+    assert "-0" in message
+
+
+def test_dms_rejects_negative_minutes_or_seconds() -> None:
+    """Minutes and seconds are magnitudes; a sign on them is a caller mistake
+    that would otherwise subtract from the degrees term.
+    """
+    with pytest.raises(FilterError):
+        _dms(30, -12, 41)
+    with pytest.raises(FilterError):
+        _dms(30, 12, -41)
