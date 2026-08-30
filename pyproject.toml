@@ -36,9 +36,12 @@ pythonpath = ["src"]
 # (257,020 records, issue #7) take a few seconds each and would otherwise be
 # paid on every red-green cycle. CI runs `-m ""` to include them; see
 # tests/infrastructure/test_full_scale.py.
+# --strict-markers means an unregistered marker is an error, so both markers
+# are declared below.
 addopts = "--strict-markers --strict-config --import-mode=importlib -m 'not slow'"
 markers = [
     "slow: a test at full catalog scale; deselected by default, run in CI",
+    "integration: touches the live JMA site; opt in with JMACAT_INTEGRATION=1",
 ]
 
 [tool.ruff]
