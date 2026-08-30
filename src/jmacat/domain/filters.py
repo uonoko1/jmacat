@@ -19,8 +19,8 @@ Keeping that promise takes work, because a record's measurements are exact
 it looks like: `Decimal("3.1") >= 3.1` is `False`, so a naive comparison drops
 every record sitting exactly on a `minimum=3.1` bound. A caller may pass a
 bound as `float`, `int` or `Decimal` — whichever is natural — and every one is
-normalised through `_as_decimal` at construction time, so the bound always
-means the decimal that was written. See `_as_decimal` for the measurements.
+normalised through `as_bound_decimal` at construction time, so the bound always
+means the decimal that was written. See `as_bound_decimal` for the measurements.
 
 **Missing values are excluded while their filter is active.** A record whose
 magnitude or depth is `None` fails a bounded `magnitude_range` / `depth_range`
@@ -169,12 +169,12 @@ Bound: TypeAlias = float | int | Decimal
 """A numeric limit a caller may pass: whichever of the three is natural.
 
 Callers write `minimum=3.0` without thinking about representation, so all
-three are accepted and normalised by `_as_decimal`. See there for why a
+three are accepted and normalised by `as_bound_decimal`. See there for why a
 `float` bound cannot be compared against a `Decimal` measurement directly.
 """
 
 
-def _as_decimal(bound: Bound) -> Decimal:
+def as_bound_decimal(bound: Bound) -> Decimal:
     """Normalise a caller's bound to the decimal number they wrote.
 
     **Why this exists: a `float` bound compared directly against a `Decimal`
@@ -204,6 +204,12 @@ def _as_decimal(bound: Bound) -> Decimal:
     The alternative, converting each record's measurement to `float`, was
     rejected: it discards the precision the parser exists to preserve, and it
     would round 6,666 of every 10,000 possible coordinates.
+
+    Public rather than private because a bound is compared outside this
+    module too — `usecase.export` refuses a minimum above a maximum before
+    fetching anything — and that comparison must use the same normalisation
+    the predicates do, or the guard and the filter would disagree about what
+    a float bound means.
     """
     if isinstance(bound, float):
         return Decimal(str(bound))
@@ -323,8 +329,8 @@ def magnitude_range(
     layer.
     """
 
-    low = None if minimum is None else _as_decimal(minimum)
-    high = None if maximum is None else _as_decimal(maximum)
+    low = None if minimum is None else as_bound_decimal(minimum)
+    high = None if maximum is None else as_bound_decimal(maximum)
 
     def predicate(event: FilterableEvent) -> bool:
         return _passes_optional_range(event.magnitude, minimum=low, maximum=high)
@@ -352,8 +358,8 @@ def depth_range(
     Kanto earthquake) and is never treated as absent.
     """
 
-    low = None if minimum_km is None else _as_decimal(minimum_km)
-    high = None if maximum_km is None else _as_decimal(maximum_km)
+    low = None if minimum_km is None else as_bound_decimal(minimum_km)
+    high = None if maximum_km is None else as_bound_decimal(maximum_km)
 
     def predicate(event: FilterableEvent) -> bool:
         return _passes_optional_range(event.depth_km, minimum=low, maximum=high)
@@ -400,7 +406,7 @@ class BoundingBox:
     unaffected.
 
     **The four edges are `Decimal`.** `__post_init__` normalises whatever it
-    is given through `_as_decimal` before validating, so `west=136.5` may
+    is given through `as_bound_decimal` before validating, so `west=136.5` may
     still be written as a plain float and the stored edge is nonetheless the
     exact decimal 136.5 -- which is what lets an edge test compare exactly
     against a record's `Decimal` coordinate. Without that step a box built
@@ -427,7 +433,7 @@ class BoundingBox:
         # compares exactly against a record's Decimal coordinate. The dataclass
         # is frozen, hence object.__setattr__.
         for name in ("south", "north", "west", "east"):
-            object.__setattr__(self, name, _as_decimal(getattr(self, name)))
+            object.__setattr__(self, name, as_bound_decimal(getattr(self, name)))
         for name, value in (("south", self.south), ("north", self.north)):
             if not Decimal(-90) <= value <= Decimal(90):
                 raise FilterError(f"{name} must be in [-90, 90]; got {value!r}.")
@@ -451,10 +457,10 @@ class BoundingBox:
 
         A record's coordinates are `Decimal`; a `float` passed by hand is
         normalised the same way a bound is, so an edge test means the decimal
-        that was written. See `_as_decimal`.
+        that was written. See `as_bound_decimal`.
         """
-        lat = _as_decimal(latitude)
-        lon = _as_decimal(longitude)
+        lat = as_bound_decimal(latitude)
+        lon = as_bound_decimal(longitude)
         if not self.south <= lat <= self.north:
             return False
         if self.crosses_antimeridian:
@@ -473,10 +479,10 @@ def build_box(
     and saves them writing `Decimal(str(...))` four times.
     """
     return BoundingBox(
-        south=_as_decimal(south),
-        north=_as_decimal(north),
-        west=_as_decimal(west),
-        east=_as_decimal(east),
+        south=as_bound_decimal(south),
+        north=as_bound_decimal(north),
+        west=as_bound_decimal(west),
+        east=as_bound_decimal(east),
         description=description,
     )
 
@@ -546,7 +552,9 @@ def _dms(
                 "seconds are magnitudes; the hemisphere is carried by "
                 "negative=."
             )
-    magnitude = Decimal(degrees) + Decimal(minutes) / 60 + _as_decimal(seconds) / 3600
+    magnitude = (
+        Decimal(degrees) + Decimal(minutes) / 60 + as_bound_decimal(seconds) / 3600
+    )
     return -magnitude if negative else magnitude
 
 

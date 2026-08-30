@@ -471,7 +471,9 @@ def test_an_unparsed_line_is_not_counted_as_reaching_a_filter(
     """
     source = InMemoryCatalogSource({1919: ["too short to be a record", M61, M20]})
 
-    result = export(_request(tmp_path, min_magnitude=3.0), source=source, writer=_writer())
+    result = export(
+        _request(tmp_path, min_magnitude=3.0), source=source, writer=_writer()
+    )
 
     assert result.records_rejected == 1
     (magnitude,) = result.filter_outcomes

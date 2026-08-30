@@ -15,9 +15,9 @@ from jmacat.domain.filters import (
     FilterError,
     NaiveDatetimeError,
     UnknownAreaError,
-    _as_decimal,
     _dms,
     all_of,
+    as_bound_decimal,
     available_area_names,
     bounding_box,
     build_box,
@@ -63,10 +63,10 @@ def event(
     """
     return StubEvent(
         origin_time,
-        _as_decimal(latitude),
-        _as_decimal(longitude),
-        None if depth_km is None else _as_decimal(depth_km),
-        None if magnitude is None else _as_decimal(magnitude),
+        as_bound_decimal(latitude),
+        as_bound_decimal(longitude),
+        None if depth_km is None else as_bound_decimal(depth_km),
+        None if magnitude is None else as_bound_decimal(magnitude),
     )
 
 

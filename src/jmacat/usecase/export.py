@@ -25,12 +25,36 @@ is used in contexts that must not pay for counting. What this layer does instead
 is ask the *value* whether it was present, using the same policy the predicate
 applies, and attribute the rejection accordingly.
 
-That leaves one honest limitation, stated rather than hidden: attribution is
-per-record and first-match. A record failing several filters is attributed to
-the first that rejects it, in the order the filters were given, so the outcome
-counts partition the input exactly once and always sum to the total. They are
-not "how many records each filter would drop in isolation", which would
-double-count and could not sum.
+Attribution is per-record and first-match. A record failing several filters is
+attributed to the first that rejects it, so the outcome counts partition the
+input exactly once and always sum to the total. They are not "how many records
+each filter would drop in isolation", which would double-count and could not
+sum.
+
+Which makes the order the filters run in a decision about meaning, not speed.
+Every filter after the first sees only what its predecessors admitted, so its
+counts describe *that* subset. Two things follow, and both are contract:
+
+- **Geography runs first** (`ExportRequest.filters`). A researcher asking for
+  `--area ishikawa --min-magnitude 3.0` is asking about Ishikawa, so the
+  magnitude counts must be about Ishikawa: 37 of the 86 h1919 records in the
+  box carry no magnitude, and 0 fall below M3.0. Cheapest-first would instead
+  charge them the national figures — 11,621 missing and 740 below — which are
+  correct arithmetic about a question nobody asked. The headline missing count
+  moves 5.4x with this order alone (2023 Ishikawa M3.0: 9,973 magnitude-first,
+  1,849 area-first), which is why it is fixed and documented rather than left
+  to whichever filter happens to be cheaper.
+- **Every count is reported against its own denominator**
+  (`FilterOutcome.records_reaching`). "37 missing" means nothing until it is
+  "37 of the 86 that reached this filter"; against the 28,235 read it would be
+  a plausible-looking 0.1 per cent.
+
+`ExportResult.reconciles` checks that the partition is total — every record
+read lands in exactly one bucket — and that is all it checks. It sums both
+exclusion reasons, so it is **blind to misattribution between them**: a result
+charging every exclusion to `excluded_by_comparison` reconciles happily. The
+comparison/missing split is the thing issue #20 is about, and it is verified by
+the tests that assert the two counts separately, never by `reconciles`.
 """
 
 from __future__ import annotations
@@ -45,6 +69,7 @@ from jmacat.domain.filters import (
     Bound,
     EventPredicate,
     FilterableEvent,
+    as_bound_decimal,
     bounding_box,
     depth_range,
     magnitude_range,
@@ -99,19 +124,45 @@ class FilterSpec:
 class FilterOutcome:
     """What one filter did to the records that reached it.
 
-    `excluded_missing` is the number this project exists to surface; see the
-    module docstring. It is zero for a filter over a field that is never blank,
-    and that zero is meaningful — it says the filter was applied and dropped
-    nothing for absence, not that nobody looked.
+    `excluded_missing_value` is the number this project exists to surface; see
+    the module docstring. It is zero for a filter over a field that is never
+    blank, and that zero is meaningful — it says the filter was applied and
+    dropped nothing for absence, not that nobody looked.
+
+    `records_reaching` is what makes that number interpretable. Under
+    first-match attribution a filter only ever judges the records its
+    predecessors admitted, so "37 missing" answers a question only once the
+    denominator is stated: 37 of the 86 records that reached this filter. It
+    counts parsed records only — a line that never parsed was never judged by
+    any filter, and including it would understate the share of missing values
+    in exactly the direction that hides the problem.
     """
 
     name: str
     excluded_by_comparison: int
     excluded_missing_value: int
+    records_reaching: int
 
     @property
     def excluded(self) -> int:
         return self.excluded_by_comparison + self.excluded_missing_value
+
+    @property
+    def missing_share_of_those_reaching(self) -> float:
+        """Percentage of the records this filter judged that had no value.
+
+        The denominator is this filter's own input, never the whole catalog:
+        a researcher asking about one prefecture must be told what fraction of
+        *their* area had no value, which is the entire point of issue #20. A
+        national denominator produces a similar-looking number that answers a
+        question nobody asked.
+
+        Zero when no record reached the filter, so a fully excluded query
+        reports no share rather than dividing by zero.
+        """
+        if self.records_reaching == 0:
+            return 0.0
+        return self.excluded_missing_value / self.records_reaching * 100
 
 
 @dataclass(frozen=True)
@@ -172,7 +223,7 @@ class ExportRequest:
     different things.
 
     Bounds are `Bound` (float, int or Decimal), normalised by `domain.filters`
-    to the decimal that was written; see `filters._as_decimal` for why a raw
+    to the decimal that was written; see `filters.as_bound_decimal` for why a raw
     float bound silently drops the records sitting exactly on it.
     """
 
@@ -188,14 +239,41 @@ class ExportRequest:
     def filters(self) -> tuple[FilterSpec, ...]:
         """The filters this request asks for, in the order they are applied.
 
-        Cheapest first, as `domain.filters.all_of` advises: the numeric range
-        tests are two comparisons, the bounding box is four.
+        **Geography first — this ordering is part of the contract, not an
+        optimisation.** Under first-match attribution (see the module
+        docstring) a filter's counts describe only the records its predecessors
+        admitted, so the order decides what every later number is *about*.
+        Putting the area filter first makes the magnitude and depth counts
+        describe the area the caller asked for, which is the question a
+        researcher is actually asking: on `--year 1919 --area ishikawa
+        --min-magnitude 3.0`, 37 of the 86 records in the box carry no
+        magnitude, and it is that 43 per cent — not the national 41.2 per cent
+        over 28,235 records — that decides whether their result is publishable.
+
+        The previous order was cheapest-first, which is what `domain.filters`
+        advises for a pure `all_of` composition where nothing is counted. Here
+        the counts are the product, so a stable, meaningful attribution is
+        worth four comparisons per record instead of two. Value filters keep
+        their relative order after it, cheapest first.
+
+        Do not reorder without changing `report()` with it: the printed lines
+        name the denominator each count is over, and the two must agree.
 
         Raises:
             UnknownAreaError: `area` is not a name `named_area` knows.
+            ExportError: a bound pair is unsatisfiable.
         """
         specs: list[FilterSpec] = []
+        if self.area is not None:
+            # Resolved here so an unknown name fails before anything is
+            # fetched or a destination file is staged.
+            specs.append(
+                FilterSpec(name="area", predicate=bounding_box(named_area(self.area)))
+            )
         if self.min_magnitude is not None or self.max_magnitude is not None:
+            _require_satisfiable(
+                "magnitude", self.min_magnitude, self.max_magnitude, unit=""
+            )
             specs.append(
                 FilterSpec(
                     name="magnitude",
@@ -206,6 +284,9 @@ class ExportRequest:
                 )
             )
         if self.min_depth_km is not None or self.max_depth_km is not None:
+            _require_satisfiable(
+                "depth", self.min_depth_km, self.max_depth_km, unit=" km"
+            )
             specs.append(
                 FilterSpec(
                     name="depth",
@@ -215,13 +296,39 @@ class ExportRequest:
                     measurement=lambda event: event.depth_km,
                 )
             )
-        if self.area is not None:
-            # Resolved here so an unknown name fails before anything is
-            # fetched or a destination file is staged.
-            specs.append(
-                FilterSpec(name="area", predicate=bounding_box(named_area(self.area)))
-            )
         return tuple(specs)
+
+
+def _require_satisfiable(
+    name: str, minimum: Bound | None, maximum: Bound | None, *, unit: str
+) -> None:
+    """Refuse a bound pair no record could ever satisfy.
+
+    A minimum above a maximum is not an empty result, it is a mistyped request:
+    the filter is a closed range, so nothing can sit inside it and the run would
+    exit zero on a header-only file that looks exactly like a legitimate finding
+    of no events. CONTRIBUTING: prefer failing loudly over returning a value
+    that might be wrong.
+
+    Equal bounds are accepted — the range is closed, so `min == max` selects the
+    records sitting exactly on that value, which is a real query.
+
+    Bounds are compared as the decimals they were written as, through the same
+    `as_bound_decimal` normalisation the predicates use, so `--min-magnitude 3.1
+    --max-magnitude 3.1` is not refused by a float artefact.
+
+    Raises:
+        ExportError: `minimum` is greater than `maximum`.
+    """
+    if minimum is None or maximum is None:
+        return
+    low, high = as_bound_decimal(minimum), as_bound_decimal(maximum)
+    if low > high:
+        raise ExportError(
+            f"The {name} range is empty: minimum {low}{unit} is above maximum "
+            f"{high}{unit}, so no record could match. Did you mean "
+            f"--min-{name} {high} --max-{name} {low}?"
+        )
 
 
 def export(
@@ -267,6 +374,10 @@ class _Counter:
         self._specs = tuple(specs)
         self._by_comparison = [0] * len(self._specs)
         self._missing = [0] * len(self._specs)
+        #: How many parsed records each filter judged. Counted rather than
+        #: derived, because deriving it would re-implement the attribution and
+        #: could silently disagree with it.
+        self._reaching = [0] * len(self._specs)
         self.records_read = 0
         self.records_written = 0
         self.records_rejected = 0
@@ -310,6 +421,7 @@ class _Counter:
         exactly once; see the module docstring.
         """
         for index, spec in enumerate(self._specs):
+            self._reaching[index] += 1
             if spec.predicate(event):
                 continue
             if spec.rejects_for_a_missing_value(event):
@@ -332,6 +444,7 @@ class _Counter:
                     name=spec.name,
                     excluded_by_comparison=self._by_comparison[index],
                     excluded_missing_value=self._missing[index],
+                    records_reaching=self._reaching[index],
                 )
                 for index, spec in enumerate(self._specs)
             ),
