@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import textwrap
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -124,6 +125,45 @@ def test_bare_parent_relative_import_names_the_parent_package() -> None:
     assert imported_modules(tree, package="jmacat.usecase.ports") == ["jmacat.usecase"]
 
 
+def test_from_import_of_a_submodule_yields_the_submodule() -> None:
+    """`from jmacat import infrastructure` names jmacat.infrastructure.
+
+    Recording only the bare module `jmacat` would hide the sibling-layer
+    import, because `layer_of("jmacat")` is None.
+    """
+    tree = ast.parse("from jmacat import infrastructure")
+    assert "jmacat.infrastructure" in imported_modules(tree, package="jmacat.domain")
+
+
+def test_from_import_of_a_submodule_keeps_its_alias_name_not_the_asname() -> None:
+    """`as` renames the local binding, not the module that is reached."""
+    tree = ast.parse("from jmacat import infrastructure as infra")
+    assert "jmacat.infrastructure" in imported_modules(tree, package="jmacat.domain")
+
+
+def test_relative_from_import_of_a_submodule_yields_the_submodule() -> None:
+    """`from ... import infrastructure` inside usecase/ports is the same leak."""
+    tree = ast.parse("from ... import infrastructure")
+    assert "jmacat.infrastructure" in imported_modules(
+        tree, package="jmacat.usecase.ports"
+    )
+
+
+def test_a_third_party_from_import_is_not_reported_twice() -> None:
+    """`from pyarrow import Table` reaches one package, so it reports once.
+
+    The dotted name exists only to resolve our own layers; emitting
+    `pyarrow.Table` too would duplicate every third-party violation message.
+    """
+    tree = ast.parse("from pyarrow import Table")
+    assert imported_modules(tree, package="jmacat.domain") == ["pyarrow"]
+
+
+def test_a_star_import_does_not_invent_a_module_named_star() -> None:
+    tree = ast.parse("from jmacat import *")
+    assert imported_modules(tree, package="jmacat.domain") == ["jmacat"]
+
+
 def test_dotted_import_keeps_its_full_path() -> None:
     tree = ast.parse("import jmacat.infrastructure.http")
     assert imported_modules(tree, package="jmacat.domain") == [
@@ -173,6 +213,32 @@ def test_usecase_importing_controller_is_a_violation() -> None:
     assert "jmacat.controller.cli" in message
 
 
+def test_domain_importing_infrastructure_via_the_parent_package_is_a_violation() -> (
+    None
+):
+    """The whole point of finding 1: `from jmacat import infrastructure`."""
+    (message,) = violations("jmacat.domain.leak", ["jmacat", "jmacat.infrastructure"])
+    assert "jmacat.infrastructure" in message
+
+
+def test_usecase_importing_controller_via_the_parent_package_is_a_violation() -> None:
+    (message,) = violations("jmacat.usecase.export", ["jmacat", "jmacat.controller"])
+    assert "jmacat.controller" in message
+
+
+def test_usecase_importing_its_own_ports_subpackage_is_allowed() -> None:
+    """`from jmacat.usecase import ports` must not become a false positive."""
+    assert (
+        violations("jmacat.usecase.export", ["jmacat.usecase", "jmacat.usecase.ports"])
+        == []
+    )
+
+
+def test_usecase_importing_domain_via_the_parent_package_is_allowed() -> None:
+    """Inward dependencies stay legal; do not over-correct into a false positive."""
+    assert violations("jmacat.usecase.export", ["jmacat", "jmacat.domain"]) == []
+
+
 def test_usecase_importing_domain_is_allowed() -> None:
     assert violations("jmacat.usecase.export", ["jmacat.domain.record"]) == []
 
@@ -198,6 +264,39 @@ def test_a_module_reports_every_violating_import_not_only_the_first() -> None:
 def test_the_guard_actually_finds_the_source_tree() -> None:
     """A guard that scans nothing would pass vacuously for ever."""
     assert len(list(source_modules())) >= 5
+
+
+def scan(source: str, *, module: str) -> list[str]:
+    """Run the whole guard over one module's source, as the suite does on disk."""
+    tree = ast.parse(source)
+    package = module.rsplit(".", 1)[0]
+    return violations(module, imported_modules(tree, package=package))
+
+
+def test_the_guard_catches_a_leak_written_the_idiomatic_way() -> None:
+    """End to end over source text, not a hand-written import list.
+
+    This is the exact file that merged clean before the fix.
+    """
+    leak = textwrap.dedent("""
+        from jmacat import infrastructure
+
+        def load() -> None:
+            infrastructure.fetch()
+    """)
+    (message,) = scan(leak, module="jmacat.domain.leak")
+    assert "jmacat.infrastructure" in message
+
+
+def test_the_guard_catches_a_relative_leak_from_a_nested_package() -> None:
+    (message,) = scan(
+        "from ... import controller\n", module="jmacat.usecase.ports.sink"
+    )
+    assert "jmacat.controller" in message
+
+
+def test_the_guard_allows_an_inward_import_written_the_idiomatic_way() -> None:
+    assert scan("from jmacat import domain\n", module="jmacat.usecase.export") == []
 
 
 def test_no_module_breaks_the_dependency_rule() -> None:
