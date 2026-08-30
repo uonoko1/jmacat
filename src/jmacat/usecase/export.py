@@ -405,13 +405,20 @@ class _Counter:
         must not vanish either: it is counted, and the first few messages are
         kept so the report says *what* was wrong. CONTRIBUTING's "fail loudly"
         is honoured by reporting, not by discarding.
+
+        The message carries the line's position, counted from one as a text
+        editor numbers lines. Without it a user reading ten identical "must be
+        96 bytes" messages knows how much was lost but has 28,235 lines to
+        search to find any of it. The number is added here rather than raised
+        by the parser because a position is a property of the stream, and
+        `parse_record` is handed one record with no idea where it came from.
         """
         try:
             return parse_record(line)
         except RecordError as error:
             self.records_rejected += 1
             if len(self.rejections) < MAX_REPORTED_REJECTIONS:
-                self.rejections.append(str(error))
+                self.rejections.append(f"line {self.records_read:,}: {error}")
             return None
 
     def _admits(self, event: Hypocenter) -> bool:

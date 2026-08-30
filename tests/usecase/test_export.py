@@ -21,6 +21,7 @@ from jmacat.domain.filters import UnknownAreaError
 from jmacat.domain.hypocenter import Hypocenter, parse_record
 from jmacat.usecase.errors import CatalogYearUnavailableError, EventWriterError
 from jmacat.usecase.export import (
+    MAX_REPORTED_REJECTIONS,
     ExportError,
     ExportRequest,
     OutputFormat,
@@ -535,3 +536,43 @@ def test_equal_bounds_are_accepted_because_a_closed_range_admits_them(
     )
 
     assert result.records_written == 1
+
+
+def test_a_rejection_message_says_which_line_was_bad(tmp_path: Path) -> None:
+    """A count tells a user how much was lost; a position tells them where.
+
+    Ten identical "must be 96 bytes, got 40" messages with no positions cannot
+    be acted on: the archive has 28,235 lines and the user has no way to find
+    the offending ones. The line number is the stream's ordinal, counted from
+    one as a text editor does, and it is added here because the parser sees one
+    record and has no idea where it came from.
+    """
+    source = InMemoryCatalogSource({1919: [M61, "too short", M20, "also too short"]})
+
+    result = export(_request(tmp_path), source=source, writer=_writer())
+
+    assert result.records_rejected == 2
+    first, second = result.rejections
+    assert first.startswith("line 2: ")
+    assert second.startswith("line 4: ")
+    # The parser's own explanation survives, rather than being replaced.
+    assert "96 bytes" in first
+
+
+def test_only_the_first_few_rejections_are_kept_but_all_are_counted(
+    tmp_path: Path,
+) -> None:
+    """A wholly corrupt archive must not be held in memory line by line.
+
+    The cap is on the messages, never on the count, so the report can still
+    say how much was lost.
+    """
+    source = InMemoryCatalogSource({1919: ["bad"] * (MAX_REPORTED_REJECTIONS + 5)})
+
+    result = export(_request(tmp_path), source=source, writer=_writer())
+
+    assert result.records_rejected == MAX_REPORTED_REJECTIONS + 5
+    assert len(result.rejections) == MAX_REPORTED_REJECTIONS
+    # The kept ones are the first, so their line numbers run from one.
+    assert result.rejections[0].startswith("line 1: ")
+    assert result.rejections[-1].startswith(f"line {MAX_REPORTED_REJECTIONS}: ")
