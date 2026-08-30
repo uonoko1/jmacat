@@ -14,6 +14,7 @@ import pytest
 
 from jmacat.domain.hypocenter import (
     FieldError,
+    _fixed_point,
     decimal_degrees,
     depth_km,
     magnitude,
@@ -208,6 +209,35 @@ def test_a_wholly_blank_depth_is_absent_rather_than_zero() -> None:
     an unknown depth into a sea-level one if a future year carries it.
     """
     assert depth_km("     ") is None
+
+
+def test_a_wholly_blank_fixed_point_field_is_absent_not_zero() -> None:
+    """Traps 6 and 9 at the level of the shared fixed-point decoder itself.
+
+    `_fixed_point` is the one unit that distinguishes the two ways a JMA
+    fixed-point field can be empty, and it is tested here directly because no
+    public caller exposes the difference: `depth_km` sends a wholly blank
+    field down its `I3,2X` branch before reaching this code, `origin_time`
+    folds `None` to `Decimal(0)` to render a datetime, and `decimal_degrees`
+    returns the bare degrees either way. Zero-padding the two halves instead -
+    `raw[:-2].strip() or "0"` - therefore passes every other test in this
+    suite while turning "field absent" into "exactly zero".
+
+    That is precisely the collapse Traps 6 forbids, and the distinction is
+    load-bearing above this function: `Hypocenter.second_is_known` and the two
+    `minutes_are_known` flags all exist to carry it to a caller.
+    """
+    assert _fixed_point("    ", field="latitude", columns="25-28") is None
+
+
+def test_a_written_zero_fixed_point_field_is_zero_not_absent() -> None:
+    """The other direction: `0000` is a determination of 0.00, not an absence.
+
+    Triangulates the test above - a decoder that returned `None` for both
+    would satisfy it. Format doc, Example I: latitude minutes of `  0  ` on
+    the depth field and an explicit `0000` minutes field are real values.
+    """
+    assert _fixed_point("0000", field="latitude", columns="25-28") == Decimal(0)
 
 
 def test_an_ordinary_magnitude_is_tenths() -> None:
