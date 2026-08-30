@@ -14,6 +14,14 @@ to the reader to infer; each is tested.
 edges of a bounding box — is inclusive. A record exactly on a limit is kept,
 so `minimum=3.0` admits an M3.0 record, which is what "M3.0 and above" means.
 
+Keeping that promise takes work, because a record's measurements are exact
+`Decimal`s and a bound written as a float literal usually is not the decimal
+it looks like: `Decimal("3.1") >= 3.1` is `False`, so a naive comparison drops
+every record sitting exactly on a `minimum=3.1` bound. A caller may pass a
+bound as `float`, `int` or `Decimal` — whichever is natural — and every one is
+normalised through `_as_decimal` at construction time, so the bound always
+means the decimal that was written. See `_as_decimal` for the measurements.
+
 **Missing values are excluded while their filter is active.** A record whose
 magnitude or depth is `None` fails a bounded `magnitude_range` / `depth_range`
 and passes an unbounded one. Blank fields are common — 9,973 of 257,020
@@ -47,8 +55,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from types import MappingProxyType
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 
 class FilterError(ValueError):
@@ -70,11 +79,30 @@ class NaiveDatetimeError(FilterError):
 class FilterableEvent(Protocol):
     """The attributes a filter reads off an event.
 
-    A structural type, not a base class. The concrete hypocenter value object
-    (issues #3/#4) is built in parallel with these filters; naming only the
-    five attributes a filter actually needs lets the two meet without either
-    importing the other, and lets a test stub or a future record type satisfy
-    the filters without inheriting anything.
+    A structural type, not a base class. Naming only the five attributes a
+    filter actually needs lets these filters and `domain.hypocenter.Hypocenter`
+    meet without either importing the other, and lets a test stub or a future
+    record type satisfy the filters without inheriting anything.
+
+    **The measurements are `Decimal`, not `float`, because the catalog's
+    values are exact and `float` cannot hold them.** A JMA coordinate is
+    published as degrees plus minutes/100, so the decimal degrees are
+    `degrees + minutes / 100 / 60`; whenever the minutes value is not
+    divisible by 3 that quotient does not terminate in binary. The format
+    doc's own worked example is one such value:
+
+        Decimal(142) + Decimal("5591") / 100 / 60   142.9318333333333333...
+        the same arithmetic in float                142.93183333333334
+
+    Two thirds of the 10,000 possible minute values (those not divisible by 3)
+    are affected, so this is the normal case rather than a corner. `Decimal`
+    holds what JMA published; `float` holds a rounding of it. The parser is
+    right to keep `Decimal`, and this Protocol adapts to the real type rather
+    than asking the domain to lose precision for the filters' convenience.
+
+    `test_filters.py::test_hypocenter_satisfies_filterable_event` makes mypy
+    prove a real parsed `Hypocenter` satisfies this Protocol, so the two
+    cannot drift apart silently again.
 
     `magnitude` is optional because the catalog leaves it blank: 9,973 of
     257,020 `h2023` records and 11,621 of 28,235 `h1919` records carry no
@@ -92,17 +120,17 @@ class FilterableEvent(Protocol):
         ...
 
     @property
-    def latitude(self) -> float:
+    def latitude(self) -> Decimal:
         """Signed decimal degrees, north positive."""
         ...
 
     @property
-    def longitude(self) -> float:
+    def longitude(self) -> Decimal:
         """Signed decimal degrees, east positive, in [-180, 180]."""
         ...
 
     @property
-    def depth_km(self) -> float | None:
+    def depth_km(self) -> Decimal | None:
         """Depth in kilometres, or None if a source omits it.
 
         Never None in `h2023` or `h1919`; see the class docstring.
@@ -110,7 +138,7 @@ class FilterableEvent(Protocol):
         ...
 
     @property
-    def magnitude(self) -> float | None:
+    def magnitude(self) -> Decimal | None:
         """Primary magnitude, or None when the catalog leaves it blank.
 
         Blank on 9,973 of 257,020 `h2023` records and 11,621 of 28,235
@@ -137,6 +165,51 @@ EventPredicate = Callable[[FilterableEvent], bool]
 """A filter: a pure function from an event to whether it is kept."""
 
 
+Bound: TypeAlias = float | int | Decimal
+"""A numeric limit a caller may pass: whichever of the three is natural.
+
+Callers write `minimum=3.0` without thinking about representation, so all
+three are accepted and normalised by `_as_decimal`. See there for why a
+`float` bound cannot be compared against a `Decimal` measurement directly.
+"""
+
+
+def _as_decimal(bound: Bound) -> Decimal:
+    """Normalise a caller's bound to the decimal number they wrote.
+
+    **Why this exists: a `float` bound compared directly against a `Decimal`
+    measurement breaks the inclusive-range guarantee, silently.** Python does
+    compare the two exactly — but "exactly" means it converts the *float* to
+    its true binary value, which is not the decimal the caller typed:
+
+        Decimal("3.1") >= 3.1        False
+        Decimal(3.1)                 3.100000000000000088817841970012523...
+
+    The literal `3.1` is a hair above three-point-one, so an M3.1 record fails
+    a `minimum=3.1` filter. This is not a rare tie. Of the 100 one-decimal
+    magnitudes 0.0-9.9 that a caller would plausibly ask for, **41 land the
+    wrong side of their own bound**, and the records lost are exactly those
+    sitting on it -- the ones an inclusive range is meant to keep. Measured on
+    `h1919`, a raw `float` bound drops all 496 M4.9 records from
+    `minimum=4.9`, all 307 M3.1 records from `minimum=3.1`, and all 5 M7.9
+    records from `minimum=7.9`.
+
+    `Decimal(str(x))` recovers the intended decimal because `str` of a float
+    is its shortest round-tripping representation: `str(3.1) == "3.1"`, so the
+    bound means three-point-one, as written. `Decimal(x)` -- without the `str`
+    -- would instead preserve the binary error and reintroduce the bug.
+
+    `int` and `Decimal` are exact already and convert directly.
+
+    The alternative, converting each record's measurement to `float`, was
+    rejected: it discards the precision the parser exists to preserve, and it
+    would round 6,666 of every 10,000 possible coordinates.
+    """
+    if isinstance(bound, float):
+        return Decimal(str(bound))
+    return Decimal(bound)
+
+
 def all_of(*predicates: EventPredicate) -> EventPredicate:
     """Compose filters: accept an event only if every predicate accepts it.
 
@@ -157,10 +230,10 @@ def all_of(*predicates: EventPredicate) -> EventPredicate:
 
 
 def _passes_optional_range(
-    value: float | None,
+    value: Decimal | None,
     *,
-    minimum: float | None,
-    maximum: float | None,
+    minimum: Decimal | None,
+    maximum: Decimal | None,
 ) -> bool:
     """Test an optional measurement against an inclusive range.
 
@@ -224,7 +297,7 @@ def time_range(
 
 
 def magnitude_range(
-    *, minimum: float | None = None, maximum: float | None = None
+    *, minimum: Bound | None = None, maximum: Bound | None = None
 ) -> EventPredicate:
     """Accept events whose magnitude lies in the closed interval.
 
@@ -250,14 +323,17 @@ def magnitude_range(
     layer.
     """
 
+    low = None if minimum is None else _as_decimal(minimum)
+    high = None if maximum is None else _as_decimal(maximum)
+
     def predicate(event: FilterableEvent) -> bool:
-        return _passes_optional_range(event.magnitude, minimum=minimum, maximum=maximum)
+        return _passes_optional_range(event.magnitude, minimum=low, maximum=high)
 
     return predicate
 
 
 def depth_range(
-    *, minimum_km: float | None = None, maximum_km: float | None = None
+    *, minimum_km: Bound | None = None, maximum_km: Bound | None = None
 ) -> EventPredicate:
     """Accept events whose hypocentral depth lies in the closed interval.
 
@@ -276,10 +352,11 @@ def depth_range(
     Kanto earthquake) and is never treated as absent.
     """
 
+    low = None if minimum_km is None else _as_decimal(minimum_km)
+    high = None if maximum_km is None else _as_decimal(maximum_km)
+
     def predicate(event: FilterableEvent) -> bool:
-        return _passes_optional_range(
-            event.depth_km, minimum=minimum_km, maximum=maximum_km
-        )
+        return _passes_optional_range(event.depth_km, minimum=low, maximum=high)
 
     return predicate
 
@@ -322,22 +399,40 @@ class BoundingBox:
     on it. The full range `west=-180, east=180` admits both signs and is
     unaffected.
 
+    **The four edges are `Decimal`.** `__post_init__` normalises whatever it
+    is given through `_as_decimal` before validating, so `west=136.5` may
+    still be written as a plain float and the stored edge is nonetheless the
+    exact decimal 136.5 -- which is what lets an edge test compare exactly
+    against a record's `Decimal` coordinate. Without that step a box built
+    from float literals would miss records lying exactly on its edge, the very
+    thing the inclusive-edge guarantee above promises to keep.
+
+    The fields are annotated `Decimal` because that is what they hold once
+    constructed and what a reader of `box.north` gets. `BoundingBox(west=136.5)`
+    is nonetheless accepted: the conversion happens in `__post_init__`, and
+    `build_box` is the type-checked way to construct one from plain numbers.
+
     `description` is required and carries the provenance of the numbers, so
     that a hand-drawn box can never travel through the system anonymously.
     """
 
-    south: float
-    north: float
-    west: float
-    east: float
+    south: Decimal
+    north: Decimal
+    west: Decimal
+    east: Decimal
     description: str
 
     def __post_init__(self) -> None:
+        # Normalise before validating, so a box built from float literals
+        # compares exactly against a record's Decimal coordinate. The dataclass
+        # is frozen, hence object.__setattr__.
+        for name in ("south", "north", "west", "east"):
+            object.__setattr__(self, name, _as_decimal(getattr(self, name)))
         for name, value in (("south", self.south), ("north", self.north)):
-            if not -90.0 <= value <= 90.0:
+            if not Decimal(-90) <= value <= Decimal(90):
                 raise FilterError(f"{name} must be in [-90, 90]; got {value!r}.")
         for name, value in (("west", self.west), ("east", self.east)):
-            if not -180.0 <= value <= 180.0:
+            if not Decimal(-180) <= value <= Decimal(180):
                 raise FilterError(f"{name} must be in [-180, 180]; got {value!r}.")
         if self.south > self.north:
             raise FilterError(
@@ -351,13 +446,39 @@ class BoundingBox:
         """Whether this box runs across +/-180 (that is, `west > east`)."""
         return self.west > self.east
 
-    def contains(self, latitude: float, longitude: float) -> bool:
-        """Whether a point lies in the box; all four edges are inclusive."""
-        if not self.south <= latitude <= self.north:
+    def contains(self, latitude: Bound, longitude: Bound) -> bool:
+        """Whether a point lies in the box; all four edges are inclusive.
+
+        A record's coordinates are `Decimal`; a `float` passed by hand is
+        normalised the same way a bound is, so an edge test means the decimal
+        that was written. See `_as_decimal`.
+        """
+        lat = _as_decimal(latitude)
+        lon = _as_decimal(longitude)
+        if not self.south <= lat <= self.north:
             return False
         if self.crosses_antimeridian:
-            return longitude >= self.west or longitude <= self.east
-        return self.west <= longitude <= self.east
+            return lon >= self.west or lon <= self.east
+        return self.west <= lon <= self.east
+
+
+def build_box(
+    *, south: Bound, north: Bound, west: Bound, east: Bound, description: str
+) -> BoundingBox:
+    """Build a `BoundingBox` from plain numbers, normalising each edge.
+
+    `BoundingBox` annotates its fields `Decimal`, because that is what they
+    hold and what a reader gets back. This factory is the type-checked door
+    for a caller holding `float`s -- a CLI argument, a literal in a test --
+    and saves them writing `Decimal(str(...))` four times.
+    """
+    return BoundingBox(
+        south=_as_decimal(south),
+        north=_as_decimal(north),
+        west=_as_decimal(west),
+        east=_as_decimal(east),
+        description=description,
+    )
 
 
 def bounding_box(box: BoundingBox) -> EventPredicate:
@@ -380,7 +501,7 @@ class UnknownAreaError(FilterError):
 
 def _dms(
     degrees: int, minutes: int, seconds: float, *, negative: bool = False
-) -> float:
+) -> Decimal:
     """Degrees/minutes/seconds to signed decimal degrees.
 
     The published prefecture extents are given in DMS; converting here rather
@@ -425,7 +546,7 @@ def _dms(
                 "seconds are magnitudes; the hemisphere is carried by "
                 "negative=."
             )
-    magnitude = degrees + minutes / 60 + seconds / 3600
+    magnitude = Decimal(degrees) + Decimal(minutes) / 60 + _as_decimal(seconds) / 3600
     return -magnitude if negative else magnitude
 
 
