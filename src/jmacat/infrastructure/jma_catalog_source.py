@@ -43,6 +43,12 @@ URL_TEMPLATE: Final = (
 #: archive; the user-visible truth is that the year is not published.
 ZIP_MAGIC: Final = b"PK\x03\x04"
 
+#: `PK\x05\x06` — the end-of-central-directory signature. A ZIP with *no*
+#: members consists of nothing else, so it starts with this rather than with a
+#: local file header and fails the check above. It is still a valid ZIP, and
+#: saying so changes only the message the user reads; see `_unavailable`.
+EMPTY_ZIP_MAGIC: Final = b"PK\x05\x06"
+
 #: 64 KiB: large enough that a ~7 MB archive is a low four-figure number of
 #: reads, small enough that peak memory stays flat regardless of archive size.
 CHUNK_BYTES: Final = 64 * 1024
@@ -366,6 +372,20 @@ class JmaCatalogSource:
         """
         if head.startswith(ZIP_MAGIC):
             return
+        if head.startswith(EMPTY_ZIP_MAGIC):
+            # A valid ZIP containing zero members. Classifying it as
+            # unavailable is right — a server handing back an empty archive is
+            # saying there is nothing in it — but the publication-lag
+            # explanation is not: it would tell a user asking for 1919 that
+            # JMA "has not published it yet" and send them to a table that says
+            # otherwise. Same class, different reason, so the message says what
+            # was actually seen.
+            raise self._unavailable(
+                year,
+                url,
+                reason="returned an empty ZIP archive, containing no files",
+                explain_publication_lag=False,
+            )
         raise self._unavailable(
             year,
             url,
@@ -377,22 +397,42 @@ class JmaCatalogSource:
         )
 
     def _unavailable(
-        self, year: int, url: str, *, reason: str
+        self,
+        year: int,
+        url: str,
+        *,
+        reason: str,
+        explain_publication_lag: bool = True,
     ) -> CatalogYearUnavailableError:
         """The one place the user-facing "year not published" message is built.
 
-        It names the year and the URL, says what was observed, and explains the
-        publication lag — a user who asks for 2024 should learn *why* it is
-        missing and what to do, not just see "404".
+        It names the year and the URL and says what was observed. It normally
+        also explains the publication lag — a user who asks for 2024 should
+        learn *why* it is missing and what to do, not just see "404".
+
+        `explain_publication_lag=False` for the observations the lag does not
+        explain. The lag text is a diagnosis, not a decoration: attaching it to
+        an empty archive tells a user asking for 1919 that the year "does not
+        exist yet", which is false and points them at a publication table that
+        will contradict it. Better to say only what was seen than to volunteer
+        a confident wrong cause.
         """
+        detail = (
+            "JMA's finalized hypocenter catalog is published with a lag of "
+            "several years, so recent years do not exist yet — this is "
+            "expected, not a fault in your setup or network. Check "
+            "https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html for the "
+            "latest published year, and request a year at or below it."
+            if explain_publication_lag
+            else "Check "
+            "https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html to "
+            "confirm what JMA publishes for this year; if it is listed there, "
+            "the served archive is at fault and re-running later may help."
+        )
         return CatalogYearUnavailableError(
             year,
-            f"The JMA catalog for year {year} is not available: {url} {reason}. "
-            f"JMA's finalized hypocenter catalog is published with a lag of "
-            f"several years, so recent years do not exist yet — this is "
-            f"expected, not a fault in your setup or network. Check "
-            f"https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html for the "
-            f"latest published year, and request a year at or below it.",
+            f"The JMA catalog for year {year} is not available: {url} "
+            f"{reason}. {detail}",
         )
 
     # -- reading -----------------------------------------------------------

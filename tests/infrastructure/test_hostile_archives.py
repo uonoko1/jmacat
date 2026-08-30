@@ -25,7 +25,11 @@ from jmacat.infrastructure.jma_catalog_source import (
     MAX_LINE_CHARS,
     JmaCatalogSource,
 )
-from jmacat.usecase.errors import CatalogRetrievalError, PortError
+from jmacat.usecase.errors import (
+    CatalogRetrievalError,
+    CatalogYearUnavailableError,
+    PortError,
+)
 from tests.infrastructure.recorded_transport import RecordedTransport
 
 RECORD_BYTES = 96
@@ -341,3 +345,58 @@ class TestCachePathFailures:
         assert "network access" not in str(caught.value), (
             "a local misconfiguration must not be reported as a network problem"
         )
+
+
+class TestEmptyArchive:
+    """A valid ZIP with zero members is a broken archive, not an unpublished year."""
+
+    def test_it_is_not_reported_with_the_publication_lag_explanation(
+        self, tmp_path: Path
+    ) -> None:
+        """A zero-member ZIP starts `PK\\x05\\x06`, so the magic check rejects it.
+
+        Classifying it as unavailable is defensible — a server serving an empty
+        archive is arguably saying there is nothing there — but the *message*
+        is not: it tells the user JMA has not published the year yet, which for
+        1919 is plainly false and sends them to check a publication table that
+        will contradict it. A dir-only ZIP already gets the right treatment via
+        `_single_member`; an empty one must not be worse off.
+        """
+        empty = io.BytesIO()
+        with zipfile.ZipFile(empty, "w"):
+            pass
+        body = empty.getvalue()
+        assert body.startswith(b"PK\x05\x06")
+
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=_zip_transport(body), max_attempts=1
+        )
+
+        with pytest.raises(CatalogYearUnavailableError) as caught:
+            source.record_lines(1919)
+
+        assert "does not exist yet" not in str(caught.value)
+        assert "lag" not in str(caught.value)
+        assert "empty" in str(caught.value).lower()
+
+    def test_a_body_that_is_not_a_zip_at_all_keeps_the_lag_explanation(
+        self, tmp_path: Path
+    ) -> None:
+        """Guard against over-correcting.
+
+        The HTML error page — the case the lag message was written for — must
+        still get it. Narrowing the message for empty archives must not narrow
+        it for the common case.
+        """
+        source = JmaCatalogSource(
+            cache_dir=tmp_path,
+            transport=RecordedTransport(
+                status=200, body=b"<html>no such file</html>", content_type="text/html"
+            ),
+            max_attempts=1,
+        )
+
+        with pytest.raises(CatalogYearUnavailableError) as caught:
+            source.record_lines(2024)
+
+        assert "lag" in str(caught.value)
