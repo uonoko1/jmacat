@@ -41,4 +41,7 @@ jobs:
         run: uv run mypy
 
       - name: Test
-        run: uv run pytest
+        # -m "" clears the default "not slow" deselection, so CI runs the
+        # full-scale writer tests (257,020 records) that a local red-green
+        # cycle skips. See tests/infrastructure/test_full_scale.py.
+        run: uv run pytest -m ""
