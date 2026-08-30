@@ -32,7 +32,14 @@ pythonpath = ["src"]
 # (tests/domain/test_record.py and tests/infrastructure/test_record.py)
 # without tests/ becoming packages. Under the default prepend mode the
 # basename collision aborts collection for the whole suite.
-addopts = "--strict-markers --strict-config --import-mode=importlib"
+# `-m "not slow"` keeps the default run fast. The full-scale writer tests
+# (257,020 records, issue #7) take a few seconds each and would otherwise be
+# paid on every red-green cycle. CI runs `-m ""` to include them; see
+# tests/infrastructure/test_full_scale.py.
+addopts = "--strict-markers --strict-config --import-mode=importlib -m 'not slow'"
+markers = [
+    "slow: a test at full catalog scale; deselected by default, run in CI",
+]
 
 [tool.ruff]
 line-length = 88
