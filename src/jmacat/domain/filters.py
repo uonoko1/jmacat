@@ -44,9 +44,10 @@ Named areas (`named_area`) are **approximate rectangles, not boundaries**. See
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Protocol
 
 
@@ -467,7 +468,7 @@ def _dms(
 #:
 #: Each box's numbers must cite where they came from. Do not add an area whose
 #: extent you cannot attribute.
-NAMED_AREAS: dict[str, BoundingBox] = {
+_NAMED_AREAS: dict[str, BoundingBox] = {
     # Extreme points published by the Ishikawa prefectural government, sourced
     # to GSI (国土地理院) and stated to be in the World Geodetic System:
     #   north 37 deg 51' 28" N  Hegurajima, Ama-machi, Wajima
@@ -490,6 +491,14 @@ NAMED_AREAS: dict[str, BoundingBox] = {
         ),
     ),
 }
+
+
+#: Read-only view of `_NAMED_AREAS`. The mapping is exposed through a
+#: `MappingProxyType` so that an importer cannot insert a box from outside:
+#: every entry must cite where its numbers came from (see above), and an
+#: uncited box added elsewhere would still be advertised by
+#: `available_area_names` as though it were maintained here.
+NAMED_AREAS: Mapping[str, BoundingBox] = MappingProxyType(_NAMED_AREAS)
 
 
 def available_area_names() -> tuple[str, ...]:

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from jmacat.domain.filters import (
+    NAMED_AREAS,
     BoundingBox,
     FilterableEvent,
     FilterError,
@@ -555,3 +556,16 @@ def test_time_range_with_no_bounds_still_rejects_a_naive_origin_time() -> None:
 
     assert magnitude_range()(event(magnitude=None)) is True
     assert depth_range()(event(depth_km=None)) is True
+
+
+def test_named_areas_cannot_be_mutated_from_outside() -> None:
+    """Every box must cite its provenance, and `description` carries that
+    citation. A plain module-level dict lets any importer insert an
+    uncited box that `available_area_names` then advertises as if it were
+    maintained here, so the mapping is read-only.
+    """
+    with pytest.raises(TypeError):
+        NAMED_AREAS["atlantis"] = BoundingBox(  # type: ignore[index]
+            south=0.0, north=1.0, west=0.0, east=1.0, description="Uncited."
+        )
+    assert "atlantis" not in available_area_names()
