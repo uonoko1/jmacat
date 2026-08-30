@@ -44,9 +44,9 @@ second. The Japanese table (`hypfmt_j.html`) says only "オリジンタイムの
 mention the time zone at all — the English table is the only place JMA states it. Do not assume
 UTC; converting requires subtracting 9 hours.
 
-Note that this applies to `U` (USGS) records as well: they are re-expressed in JST by JMA when
-folded into the bulletin. See *Unresolved* — this specific point is inferred from the
-"the same applies below" wording covering the whole table, not from a statement scoped to `U`.
+The specification does not scope the time zone by record type, so JST is taken to apply to `U`
+and `I` records too. Example G below is consistent with that reading. This is an inference from
+the note's placement, not an explicit JMA statement — see *Unresolved* item 1.
 
 ## Field table
 
@@ -214,7 +214,10 @@ U2023020610173434     371354      370086     10     68B80S    719   TURKEY
 
 - Magnitude 1 c53-54 = `68`, type `B` → mb 6.8; Magnitude 2 c56-57 = `80`, type `S` → MS 8.0
 - Damage class c63 = `7` → 20,000+ fatalities or 1,000,000+ houses destroyed
-- Origin time `2023-02-06 10:17:34.34` **JST** (= 2023-02-06 01:17 UTC)
+- Origin time c02-17 = `2023` `02` `06` `10` `17` `3434` → **2023-02-06 10:17:34.34 JST**.
+  This is the Kahramanmaras, Turkey M7.8 mainshock, whose USGS origin time is
+  2023-02-06 01:17:34 UTC. Subtracting 9 h from the record reproduces the UTC time exactly,
+  which independently confirms the JST reading against an external catalog.
 
 ### Example H — maximum intensity code and CMT moment magnitude
 
@@ -489,10 +492,10 @@ than guessed.
 
 1. **Whether `U` and `I` origin times are also JST.** The specification's JST note is attached
    to the Year field with "the same applies below", which grammatically covers the remaining
-   time fields for all record types, and JMA folds foreign determinations into its own bulletin.
-   Example G is consistent with JST (the 2023 Turkey earthquake, 01:17 UTC, appears as
-   `10:17`). But no sentence in the specification scopes the time zone to record type
-   explicitly. Treat as JST; flag it if a downstream comparison disagrees.
+   time fields, but no sentence scopes the time zone by record type. Example G corroborates JST
+   for a `U` record against an external catalog (record 10:17:34 JST minus 9 h equals the USGS
+   UTC origin time of 01:17:34 for the 2023 Turkey M7.8), so JST is well supported for `U`.
+   No `I` record exists in `h2023`, so `I` is untested. Treat all record types as JST.
 
 2. **The exact rounding/truncation JMA applies** when converting internal precision to the
    hundredths-of-a-minute and hundredths-of-a-km fields. Not stated. Round-tripping a decoded
