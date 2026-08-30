@@ -9,7 +9,13 @@ dependencies = [
     # Parquet writing in `infrastructure/` (issue #7). CSV needs nothing beyond
     # the standard library.
     "pyarrow>=17",
+    "typer>=0.27.2",
 ]
+
+[project.scripts]
+# The `jmacat` command. The CLI is the composition root; see
+# src/jmacat/controller/cli.py.
+jmacat = "jmacat.controller.cli:app"
 
 [build-system]
 requires = ["hatchling"]

@@ -11,6 +11,115 @@ The record layout, its traps and every offset are documented in
 source of truth for this project. Contribution rules are in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Usage
+
+Install, then fetch a year:
+
+```sh
+uv run jmacat fetch --year 2023 --output events.parquet
+uv run jmacat fetch --year 2023 --area ishikawa --min-magnitude 3.0 --format csv
+```
+
+`--version` and `--help` do what you expect, and any failure exits non-zero
+with a message rather than a traceback.
+
+### What a filter dropped, and why
+
+A filtered run reports three numbers, not one. **A record excluded because its
+magnitude is below the bound and a record excluded because it has no magnitude
+at all mean opposite things**, and collapsing them lets a silently shrunken
+dataset pass as a complete one.
+
+The effect is largest on the pre-war catalog. `h1919` covers 1919-1950, and
+11,621 of its 28,235 records carry no magnitude:
+
+```console
+$ jmacat fetch --year 1919 --output h1919_m3.csv --format csv --min-magnitude 3.0
+Wrote 15,874 events to h1919_m3.csv (csv).
+Read 28,235 records from the 1919 catalog.
+15,874 selected after filtering:
+  740 excluded by magnitude (of the 28,235 parsed records)
+  11,621 excluded for a missing magnitude — 41.2% of the 28,235 parsed records. These records carry no magnitude at all, so the filter could not judge them
+  (15,874 + 12,361 excluded + 0 unparsed = 28,235 read)
+```
+
+Two fifths of the era is dropped for want of a magnitude rather than for being
+too small, and the run says so. A researcher who needs those rows keeps them by
+not applying the filter.
+
+#### Every count says what it was counted over
+
+Each exclusion line names its own denominator, because with more than one
+filter the counts are **not** independent facts about the whole catalog. A
+record is attributed to the first filter that rejects it, so every filter after
+the first judged only what its predecessors admitted.
+
+**The geographic filter therefore runs first**, deliberately and as part of the
+contract, so that the magnitude and depth counts describe the area you asked
+about:
+
+```console
+$ jmacat fetch --year 1919 --area ishikawa --min-magnitude 3.0 --output noto.parquet
+Wrote 49 events to noto.parquet (parquet).
+Read 28,235 records from the 1919 catalog.
+49 selected after filtering:
+  28,149 excluded by area (of the 28,235 parsed records)
+  37 excluded for a missing magnitude — 43.0% of the 86 that reached it. These records carry no magnitude at all, so the filter could not judge them
+  (49 + 28,186 excluded + 0 unparsed = 28,235 read)
+```
+
+Read that as it is written: of the **86** records inside the Ishikawa box, 37
+carry no magnitude — **43 per cent of your own data** — and none of the rest
+falls below M3.0, leaving 49. The catalog-wide figures for the same query, 740
+below the bound and 11,621 blank, are about Japan and would answer a question
+you did not ask.
+
+"Parsed records" is not the same as the header's "read" whenever a line fails to
+parse: an unparsable line reaches no filter, so it is excluded from every
+filter's denominator and appears only in the unparsed count.
+
+The exclusion policy itself lives in `domain/filters.py` and is unchanged: a
+range filter is a claim about a value, and a record with no value supports no
+claim. The **counting** is in the interactor, because a predicate that
+accumulated state would no longer be a pure function.
+
+Records that fail to parse are counted and reported the same way, never
+silently dropped. The bracketed identity closes: every record read is written,
+excluded, or unparsed, exactly once.
+
+### The same operation from Python
+
+The CLI is a thin wrapper over one function, so the command line and the SDK
+cannot drift into different behaviour:
+
+```python
+from pathlib import Path
+
+from jmacat.controller.cli import fetch
+from jmacat.usecase.export import OutputFormat
+
+result = fetch(
+    year=1919,
+    output=Path("h1919_m3.csv"),
+    output_format=OutputFormat.CSV,
+    min_magnitude=3.0,
+)
+result.records_written  # 15874
+result.records_excluded_for_a_missing_value  # 11621
+result.reconciles()  # True
+```
+
+Every command-line option is a parameter of that function; a test reads the
+signature and requires `--help` to advertise each one.
+
+### Named areas
+
+`--area` selects an **approximate bounding box**, not a prefecture boundary.
+`--area ishikawa` also covers parts of Toyama, Gifu and Fukui and a stretch of
+the Sea of Japan; see `NAMED_AREAS` in `domain/filters.py` for the extent and
+its provenance. An unknown name lists the ones that work rather than returning
+zero events.
+
 ## What this tool is for, and what it is not for
 
 jmacat exists to turn a published, finalized seismic catalog into a table you can
@@ -224,6 +333,19 @@ The same rule applies to depth, although the depth field is blank on no record o
 either corpus. A filter that is not applied excludes nothing, so records with a
 missing value are kept by simply not filtering on that field.
 
+A minimum above a maximum is refused before anything is fetched, rather than
+returning the empty result it would produce. An empty file is indistinguishable
+from a legitimate finding of no events, and a mistyped bound should not be able
+to look like one:
+
+```console
+$ jmacat fetch --year 1919 --min-magnitude 5.0 --max-magnitude 3.0 --output out.parquet
+error: The magnitude range is empty: minimum 5.0 is above maximum 3.0, so no record could match. Did you mean --min-magnitude 3.0 --max-magnitude 5.0?
+```
+
+Equal bounds are accepted: the ranges are closed, so `--min-magnitude 6.1
+--max-magnitude 6.1` selects the records sitting exactly on M6.1.
+
 ### Named areas are rectangles, not boundaries
 
 `ishikawa` is a bounding box drawn around the prefecture's four extreme points
@@ -423,6 +545,10 @@ comparing batched against unbatched writing in separate processes.
 uv sync
 uv run pytest          # fast suite; full-scale tests are deselected
 uv run pytest -m ""    # everything, as CI runs it
+
+# One end-to-end run against the real published catalog. Downloads h1919 to a
+# temporary cache and discards it; no catalog data is ever committed.
+JMACAT_INTEGRATION=1 uv run pytest -m integration
 uv run mypy
 uv run ruff check
 uv run ruff format --check
