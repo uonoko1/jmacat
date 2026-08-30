@@ -1,4 +1,4 @@
-"""Output ports of the use case layer.
+"""Output ports of the use case layer: `typing.Protocol` interfaces.
 
 `infrastructure/` implements these; `usecase/` depends only on them. Importing
 from this package rather than the individual modules keeps call sites stable if
