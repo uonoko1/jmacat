@@ -17,9 +17,14 @@ import pytest
 from typer.testing import CliRunner
 
 import jmacat.controller.cli as cli
-from jmacat.controller.cli import app, build_writer, fetch, run_fetch
+from jmacat.controller.cli import app, build_writer, fetch, report, run_fetch
 from jmacat.domain.hypocenter import Hypocenter
-from jmacat.usecase.export import ExportRequest, ExportResult, OutputFormat
+from jmacat.usecase.export import (
+    ExportRequest,
+    ExportResult,
+    FilterOutcome,
+    OutputFormat,
+)
 from jmacat.usecase.ports import CatalogSource, EventWriter
 from tests.fakes import InMemoryCatalogSource, UnavailableYearCatalogSource
 
@@ -29,6 +34,15 @@ from tests.fakes import InMemoryCatalogSource, UnavailableYearCatalogSource
 M61 = "J1919031219312449 049 413032 193 1441504 352  0     61J   5211  1 28SE OFF TOKACHI            9K"  # noqa: E501
 M20 = "J1927032408565221 004 353142 076 1351558 087 12     20J   151   5182NORTHERN KYOTO PREF       4K"  # noqa: E501
 BLANK_MAGNITUDE = "J1919010518532883 087 372982 273 1383601 165  4           5711  4132MID NIIGATA PREF          5S"  # noqa: E501
+
+#: h1919 line 284. 36.239N 137.080E, inside the approximate Ishikawa box.
+INSIDE_ISHIKAWA = "J1920052903245705 078 361432 300 1370482 345  2     45J   5211  4142TOYAMA GIFU BORDER REG   14K"  # noqa: E501
+
+#: h1919 line 9162. 37.075N 137.024E, inside the box, magnitude columns blank:
+#: NOTO PENINSULA REGION, no magnitude ever determined. The record that makes a
+#: multi-filter missing-value count mean something -- it is missing inside the
+#: area the user asked about.
+INSIDE_ISHIKAWA_BLANK_MAGNITUDE = "J1933092113100852 033 370452 123 1370145 226 20           1312  4135NOTO PENINSULA REGION     9K"  # noqa: E501
 
 runner = CliRunner()
 
@@ -470,3 +484,298 @@ def test_the_request_the_cli_builds_is_the_one_the_interactor_receives(
     assert request.min_depth_km == 10
     assert request.max_depth_km == 200
     assert request.area == "ishikawa"
+
+
+# -- report(), tested directly as the pure function its docstring promises ---
+#
+# Every assertion below is on a value, not on the presence of a phrase. A
+# substring match would pass under a doubled percentage or an off-by-one
+# identity line -- both of which survived the whole suite before these existed.
+
+
+def _outcome(
+    name: str,
+    *,
+    by_comparison: int = 0,
+    missing: int = 0,
+    reaching: int,
+) -> FilterOutcome:
+    return FilterOutcome(
+        name=name,
+        excluded_by_comparison=by_comparison,
+        excluded_missing_value=missing,
+        records_reaching=reaching,
+    )
+
+
+def _result(
+    *,
+    read: int,
+    written: int,
+    rejected: int = 0,
+    outcomes: tuple[FilterOutcome, ...] = (),
+    rejections: tuple[str, ...] = (),
+) -> ExportResult:
+    return ExportResult(
+        year=1919,
+        destination=Path("events.parquet"),
+        output_format=OutputFormat.PARQUET,
+        records_read=read,
+        records_written=written,
+        records_rejected=rejected,
+        filter_outcomes=outcomes,
+        rejections=rejections,
+    )
+
+
+def test_the_missing_value_percentage_is_over_the_filters_own_input() -> None:
+    """The most quotable number the tool emits, pinned to a value.
+
+    The real `--year 1919 --area ishikawa --min-magnitude 3.0` run: 28,235
+    records read, 28,149 outside the Ishikawa box, and of the 86 inside it 37
+    carry no magnitude and 0 fall below M3.0, leaving 49 selected. All figures
+    computed directly from the published `h1919` archive.
+
+    43.0 per cent is 37/86 -- the share of the researcher's own area. The
+    national share, 37/28,235, would print as 0.1 per cent, and 11,621/28,235
+    as 41.2; neither answers the question the query asked.
+    """
+    lines = report(
+        _result(
+            read=28_235,
+            written=49,
+            outcomes=(
+                _outcome("area", by_comparison=28_149, reaching=28_235),
+                _outcome("magnitude", missing=37, reaching=86),
+            ),
+        )
+    )
+
+    (missing_line,) = [line for line in lines if "missing magnitude" in line]
+    assert "43.0%" in missing_line
+    # The denominator is printed, not left for the reader to guess at.
+    assert "86" in missing_line
+    assert "41.2%" not in missing_line
+    assert "0.1%" not in missing_line
+
+
+def test_the_percentage_is_computed_rather_than_copied_from_one_case() -> None:
+    """Triangulation, so the figure above cannot be a constant that fits.
+
+    Half the records reaching the filter is 50.0 per cent, whatever the
+    catalog-wide total is; the `records_read` here is deliberately a different
+    number from the denominator.
+    """
+    lines = report(
+        _result(
+            read=1_000,
+            written=5,
+            outcomes=(
+                _outcome("area", by_comparison=990, reaching=1_000),
+                _outcome("magnitude", missing=5, reaching=10),
+            ),
+        )
+    )
+
+    (missing_line,) = [line for line in lines if "missing magnitude" in line]
+    assert "50.0%" in missing_line
+
+
+def test_the_identity_line_states_the_arithmetic_it_claims_to_prove() -> None:
+    """The line exists so a reader can check the sum; its terms must be exact.
+
+    9 written + (4 + 2) excluded + 3 unparsed = 18 read. An off-by-one in any
+    term makes the printed identity false while every substring assertion in
+    the suite still passes.
+    """
+    lines = report(
+        _result(
+            read=18,
+            written=9,
+            rejected=3,
+            outcomes=(_outcome("magnitude", by_comparison=4, missing=2, reaching=15),),
+        )
+    )
+
+    (identity,) = [line for line in lines if line.strip().startswith("(")]
+    assert identity.strip() == "(9 + 6 excluded + 3 unparsed = 18 read)"
+
+
+def test_every_exclusion_line_says_what_it_counted_over() -> None:
+    """A later filter's counts are residues, and must read as residues.
+
+    "740 excluded by magnitude" in the grammar of an independent fact invites a
+    reader to take it as a statement about their whole query. Each line after
+    the first therefore names the population it is about.
+    """
+    lines = report(
+        _result(
+            read=28_235,
+            written=49,
+            outcomes=(
+                _outcome("area", by_comparison=28_149, reaching=28_235),
+                _outcome("magnitude", by_comparison=0, missing=37, reaching=86),
+            ),
+        )
+    )
+
+    body = "\n".join(lines)
+    assert "of the 28,235 records read" in body
+    assert "of the 86 that reached it" in body
+
+
+def test_the_first_filter_is_not_described_as_a_residue() -> None:
+    """The complement, so the phrasing is chosen rather than appended to every line.
+
+    The first filter judges every parsed record, so it has no predecessor to be
+    a residue of, and saying "of those remaining" would be false.
+    """
+    lines = report(
+        _result(
+            read=100,
+            written=90,
+            outcomes=(_outcome("magnitude", by_comparison=10, reaching=100),),
+        )
+    )
+
+    assert "that reached it" not in "\n".join(lines)
+
+
+def test_a_run_that_excludes_everything_reports_no_share_rather_than_dividing() -> None:
+    """A query whose area admits nothing must not crash on a zero denominator."""
+    lines = report(
+        _result(
+            read=500,
+            written=0,
+            outcomes=(
+                _outcome("area", by_comparison=500, reaching=500),
+                _outcome("magnitude", reaching=0),
+            ),
+        )
+    )
+
+    assert "0 selected after filtering" in "\n".join(lines)
+
+
+def test_a_bound_pair_that_can_admit_nothing_is_a_clean_error(
+    tmp_path: Path, catalog: InMemoryCatalogSource
+) -> None:
+    """`--min-magnitude 5.0 --max-magnitude 3.0` used to exit zero.
+
+    It wrote a header-only file indistinguishable from a legitimate finding of
+    no events. It must now fail, say why, and leave no destination behind — and
+    it must do so without fetching, so a typo costs no 25 MB download.
+    """
+    destination = tmp_path / "events.csv"
+
+    result = runner.invoke(
+        app,
+        [
+            "fetch",
+            "--year",
+            "1919",
+            "--output",
+            str(destination),
+            "--format",
+            "csv",
+            "--min-magnitude",
+            "5.0",
+            "--max-magnitude",
+            "3.0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "magnitude" in result.output
+    assert not destination.exists()
+    assert catalog.requested_years == []
+
+
+def test_a_depth_pair_that_can_admit_nothing_is_a_clean_error(
+    tmp_path: Path, catalog: InMemoryCatalogSource
+) -> None:
+    """Triangulation at the CLI: the guard is not spelled for magnitude alone."""
+    destination = tmp_path / "events.csv"
+
+    result = runner.invoke(
+        app,
+        [
+            "fetch",
+            "--year",
+            "1919",
+            "--output",
+            str(destination),
+            "--format",
+            "csv",
+            "--min-depth",
+            "700",
+            "--max-depth",
+            "10",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "depth" in result.output
+    assert not destination.exists()
+
+
+def test_a_multi_filter_run_reports_counts_about_the_area_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocking finding of PR #25's review, at the surface a researcher reads.
+
+    Five real records: two inside the Ishikawa box (the M4.5 Toyama/Gifu border
+    record, and the blank-magnitude Noto one), three elsewhere in Japan (M6.1
+    off Tokachi, M2.0 northern Kyoto, blank-magnitude mid Niigata).
+
+    Under `--area ishikawa --min-magnitude 3.0` the magnitude filter judged two
+    records and found one with no magnitude: 50 per cent of the researcher's
+    area, not 40 per cent of Japan. The report must print the figure that
+    answers their query and say what it is over.
+    """
+    monkeypatch.setattr(
+        "jmacat.controller.cli.build_source",
+        lambda **kwargs: InMemoryCatalogSource(
+            {
+                1919: [
+                    M61,
+                    INSIDE_ISHIKAWA,
+                    M20,
+                    BLANK_MAGNITUDE,
+                    INSIDE_ISHIKAWA_BLANK_MAGNITUDE,
+                ]
+            }
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "fetch",
+            "--year",
+            "1919",
+            "--output",
+            str(tmp_path / "e.csv"),
+            "--format",
+            "csv",
+            "--area",
+            "ishikawa",
+            "--min-magnitude",
+            "3.0",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "1 selected after filtering" in result.output
+    (missing_line,) = [
+        line for line in result.output.splitlines() if "missing magnitude" in line
+    ]
+    # 1 of the 2 records that reached the magnitude filter.
+    assert "50.0%" in missing_line
+    assert "of the 2 that reached it" in missing_line
+    # The national share, 2 of 5, must not be what is printed.
+    assert "40.0%" not in missing_line
+    # Nothing inside the box fell below M3.0, so no comparison line for it.
+    assert "excluded by magnitude" not in result.output

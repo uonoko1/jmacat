@@ -42,8 +42,10 @@ from jmacat.infrastructure.jma_catalog_source import JmaCatalogSource
 from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
 from jmacat.usecase.errors import PortError
 from jmacat.usecase.export import (
+    ExportError,
     ExportRequest,
     ExportResult,
+    FilterOutcome,
     OutputFormat,
     export,
 )
@@ -224,9 +226,11 @@ def run_fetch(
             min_depth_km=min_depth_km,
             max_depth_km=max_depth_km,
         )
-    except FilterError as error:
-        # An unknown area, or a bound the filters refuse. The message already
-        # lists what would have worked.
+    except (ExportError, FilterError) as error:
+        # A malformed request: an unknown area, a bound pair no record could
+        # satisfy, or a bound the filters refuse. Each message already says
+        # what would have worked, and each is raised before anything is
+        # fetched or staged, so there is nothing to clean up.
         _fail(str(error))
     except PortError as error:
         _fail(_port_failure(error))
@@ -262,7 +266,10 @@ def report(result: ExportResult) -> list[str]:
     """The lines printed after a successful run.
 
     Separate from the command so it can be tested as a pure function of a
-    result, and so an SDK caller can print the same summary.
+    result, and so an SDK caller can print the same summary. Its numeric
+    content is asserted directly in `tests/controller/test_cli.py`, on values
+    rather than on the presence of a phrase — a substring match let a doubled
+    percentage and an off-by-one identity line through the whole suite.
 
     **Selected is reported once, not per filter.** The outcome counts partition
     the input — a record is attributed to the first filter that rejects it — so
@@ -270,11 +277,28 @@ def report(result: ExportResult) -> list[str]:
     filter would read as though every filter had independently selected that
     many.
 
+    **Every count names the population it is over.** This is the correction the
+    review of PR #25 required, and it is the difference between a report a
+    researcher can publish from and one that misleads them. First-match
+    attribution makes each filter's numbers a residue of what its predecessors
+    left, so `--area ishikawa --min-magnitude 3.0` over `h1919` produces "740
+    excluded by magnitude" — a fact about Japan — under a query about one
+    prefecture, where the figure inside the box is zero. Correct arithmetic,
+    arranged so it reads as an answer to a question it does not answer. So each
+    line after the first says what it counted over ("of the 86 that reached
+    it"), and the missing-value percentage is computed against that same
+    denominator rather than against `records_read`.
+
+    Ordering carries half the work: `ExportRequest.filters` runs the
+    geographic filter first precisely so these residues describe the area the
+    user asked about. The two must change together.
+
     The missing-value exclusion gets its own line, and **only when it is
     non-zero**: a line that always appeared would tell every user the same
-    thing and stop carrying information. Issue #20 exists because 41.2 per cent
-    of the pre-war corpus vanishes from an `--min-magnitude` run for want of a
-    magnitude, and a user told only the selected count cannot see it.
+    thing and stop carrying information. Issue #20 exists because 37 of the 86
+    h1919 records inside the Ishikawa box carry no magnitude — 43 per cent of
+    the researcher's own data — and a user told only the selected count cannot
+    see it.
     """
     lines = [
         f"Wrote {result.records_written:,} events to {result.destination} "
@@ -289,19 +313,8 @@ def report(result: ExportResult) -> list[str]:
         lines.extend(f"  {reason}" for reason in result.rejections)
     if result.filter_outcomes:
         lines.append(f"{result.records_written:,} selected after filtering:")
-        for outcome in result.filter_outcomes:
-            if outcome.excluded_by_comparison:
-                lines.append(
-                    f"  {outcome.excluded_by_comparison:,} excluded by {outcome.name}"
-                )
-            if outcome.excluded_missing_value:
-                share = outcome.excluded_missing_value / result.records_read * 100
-                lines.append(
-                    f"  {outcome.excluded_missing_value:,} excluded for a "
-                    f"missing {outcome.name} ({share:.1f}% of the records "
-                    f"read) — these records carry no {outcome.name} at all, "
-                    f"so the filter could not judge them"
-                )
+        for position, outcome in enumerate(result.filter_outcomes):
+            lines.extend(_outcome_lines(outcome, is_first=position == 0))
         # The identity is printed so a reader can check it rather than take the
         # numbers on trust; a run whose counts did not reconcile would be a bug
         # in the attribution, and this is where it would show.
@@ -309,6 +322,34 @@ def report(result: ExportResult) -> list[str]:
             f"  ({result.records_written:,} + {result.records_excluded:,} "
             f"excluded + {result.records_rejected:,} unparsed "
             f"= {result.records_read:,} read)"
+        )
+    return lines
+
+
+def _outcome_lines(outcome: FilterOutcome, *, is_first: bool) -> list[str]:
+    """What one filter did, phrased so the population is never left implicit.
+
+    `is_first` is not cosmetic. The first filter judges every parsed record, so
+    it has no predecessor to be a residue of and "of those that reached it"
+    would be false; every later one judges only what its predecessors admitted,
+    and a bare count there is the defect this function exists to avoid.
+    """
+    over = (
+        f"of the {outcome.records_reaching:,} records read"
+        if is_first
+        else f"of the {outcome.records_reaching:,} that reached it"
+    )
+    lines: list[str] = []
+    if outcome.excluded_by_comparison:
+        lines.append(
+            f"  {outcome.excluded_by_comparison:,} excluded by {outcome.name} ({over})"
+        )
+    if outcome.excluded_missing_value:
+        lines.append(
+            f"  {outcome.excluded_missing_value:,} excluded for a missing "
+            f"{outcome.name} — {outcome.missing_share_of_those_reaching:.1f}% "
+            f"{over}. These records carry no {outcome.name} at all, so the "
+            f"filter could not judge them"
         )
     return lines
 
