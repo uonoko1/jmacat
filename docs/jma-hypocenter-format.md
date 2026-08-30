@@ -12,7 +12,10 @@ Authoritative reference for the JMA Seismological Bulletin hypocenter file layou
 | **Record layout table (EN)** | <https://www.data.jma.go.jp/eqev/data/bulletin/data/format/hypfmt_e.html> |
 | **Record layout table (JA)** | <https://www.data.jma.go.jp/eqev/data/bulletin/data/format/hypfmt_j.html> |
 | Hypocenter file index | <https://www.data.jma.go.jp/eqev/data/bulletin/hypo_e.html> |
+| **Appendix index (1.A.3 震央地名表)** | <https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/appendixj.html> (anchor `#REGION`) |
+| **Region name tables, districts 1-8** | <https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/regname1.html> … `regname8.html` |
 | Catalog used for cross-check | <https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo/h2023.zip> |
+| Historical catalog used for cross-check | <https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo/h1919.zip> |
 
 The specification is a **plain HTML `<table>`**, not an image and not a PDF. It lives on
 `hypfmt_e.html` / `hypfmt_j.html`, which the overview pages `fmthyp_*.html` merely link to.
@@ -21,13 +24,39 @@ a table of contents. The English and Japanese layout tables were compared field 
 agree on every offset, type and code value; the English table carries one extra sentence the
 Japanese one lacks (see *Time zone* below).
 
-Cross-check corpus: `h2023` (year 2023), extracted from `h2023.zip`.
+The appendix tables are **not** under `data/format/`; they live under `catalog/appendix/`, one
+directory level up from the format pages, and are reached from the bulletin index rather than
+from `hypfmt_*.html`. That is why an earlier search of the format pages alone did not find them.
+
+Cross-check corpora: `h2023` (year 2023) and `h1919` (years 1919-1950), extracted from the
+corresponding zips. Two eras are used deliberately: several fields and code values that never
+occur in 2023 are common in the historical file, and some of them are traps (see *Traps* 9).
 
 - `h2023.zip` — 6,977,812 bytes, `sha256:e5ced2bf7275825ba75405b071bb54e9d4c2a5eb55aa6bc9b8d670de1f58b98f`
 - `h2023` — 24,930,940 bytes, `sha256:9f9d0d230e65858388393691fe2f4a445641cab06266f943d03927627fa4d4d4`
 - 257,020 records; every line is exactly 96 bytes of ASCII, each terminated by a single
   `\n` (LF, no CR). Verified: 257,020 x 97 = 24,930,940 = the file size exactly, and the
   file contains zero bytes above 0x7F. The 96 bytes in the field table exclude the terminator.
+- `h1919.zip` — 799,597 bytes, `sha256:c32a531c7ee1e860cd74a3a1ce178f899f2c7553a508025681a7a74a30c0e01b`
+- `h1919` — 2,738,795 bytes, `sha256:03a935d6cde3c5571bec03a7f65adf84ea9f25f0a54550eaf4534ac72b219b48`
+- 28,235 records spanning 1919-1950; same encoding, 28,235 x 97 = 2,738,795 = the file size,
+  again pure ASCII with no CR.
+
+### Record width is stable across eras
+
+Every line is exactly 96 bytes in all four years checked — 1919 (the file covering 1919-1950),
+1995, 2019 and 2023 — with no trailing partial line and no byte above 0x7F:
+
+| File | Records | Bytes | records x 97 = bytes | Distinct line lengths |
+| --- | --- | --- | --- | --- |
+| `h1919` (1919-1950) | 28,235 | 2,738,795 | yes | {96} |
+| `h1995` | 56,250 | 5,456,250 | yes | {96} |
+| `h2019` | 223,367 | 21,666,599 | yes | {96} |
+| `h2023` | 257,020 | 24,930,940 | yes | {96} |
+
+The layout is therefore stable back to the start of the published record. This does not prove
+every unchecked year conforms, so a parser should still reject a line whose length is not 96
+rather than slicing blindly.
 
 Catalog data is **not** committed to this repository (JMA terms: fetch at run time, do not
 redistribute). `.gitignore` excludes `*.zip` and `h[0-9][0-9][0-9][0-9]`.
