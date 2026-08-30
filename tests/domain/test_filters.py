@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
-from jmacat.domain.filters import time_range
+import pytest
+
+from jmacat.domain.filters import NaiveDatetimeError, time_range
 
 JST = timezone(timedelta(hours=9), "JST")
 
@@ -75,3 +77,37 @@ def test_time_range_is_inclusive_of_its_end_boundary() -> None:
     end = datetime(2023, 1, 2, 0, 0, tzinfo=JST)
     predicate = time_range(start=datetime(2023, 1, 1, 0, 0, tzinfo=JST), end=end)
     assert predicate(event(origin_time=end)) is True
+
+
+def test_time_range_rejects_a_naive_start_bound() -> None:
+    """Catalog times are JST (UTC+9). A naive bound would silently shift the
+    window by 9 hours against a JST origin time, so it is refused outright.
+    """
+    with pytest.raises(NaiveDatetimeError):
+        time_range(start=datetime(2023, 1, 1, 0, 0))
+
+
+def test_time_range_rejects_a_naive_end_bound() -> None:
+    with pytest.raises(NaiveDatetimeError):
+        time_range(end=datetime(2023, 1, 2, 0, 0))
+
+
+def test_time_range_compares_across_time_zones_by_absolute_instant() -> None:
+    """Bounds need not be JST; an aware bound in any zone is compared by
+    instant. 2023-01-01 00:00 JST is 2022-12-31 15:00 UTC.
+    """
+    predicate = time_range(
+        start=datetime(2022, 12, 31, 15, 0, tzinfo=UTC),
+        end=datetime(2022, 12, 31, 15, 30, tzinfo=UTC),
+    )
+    at_start = event(origin_time=datetime(2023, 1, 1, 0, 0, tzinfo=JST))
+    assert predicate(at_start) is True
+
+
+def test_time_range_rejects_an_event_whose_origin_time_is_naive() -> None:
+    """A naive origin time cannot be compared to an aware bound: Python raises
+    `TypeError`. Raising the filter's own error instead names the real cause.
+    """
+    predicate = time_range(start=datetime(2023, 1, 1, 0, 0, tzinfo=JST))
+    with pytest.raises(NaiveDatetimeError):
+        predicate(event(origin_time=datetime(2023, 6, 1, 0, 0)))
