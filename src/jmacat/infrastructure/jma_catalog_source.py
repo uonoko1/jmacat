@@ -181,9 +181,20 @@ class JmaCatalogSource:
         """One attempt: fetch, classify, verify, and write atomically."""
         try:
             response = self._transport.fetch(url, timeout=self._timeout)
-        except OSError as error:
-            # Timeouts, resets and DNS failures all arrive as OSError. The
-            # errors module classifies these as retryable retrieval failures.
+        except TRANSFER_FAILURES as error:
+            # Timeouts, resets and DNS failures arrive as OSError. But not
+            # everything urllib lets out of `urlopen` is one:
+            # `AbstractHTTPHandler.do_open` wraps `h.request(...)` in
+            # `except OSError` and then calls `h.getresponse()` *outside* that
+            # wrap, so every `http.client.HTTPException` raised while reading
+            # the status line and headers propagates unwrapped —
+            # `BadStatusLine` from a broken proxy or a captive portal answering
+            # in its own protocol, `LineTooLong`, `InvalidURL`.
+            # `RemoteDisconnected` happens to be safe only because it is also a
+            # `ConnectionResetError`; its siblings are not. All of them are
+            # transport trouble and say nothing about publication, so they are
+            # retryable retrieval failures — the same bucket, reached through
+            # the same tuple used everywhere else a transfer can fail.
             raise CatalogRetrievalError(
                 f"Could not reach {url} while fetching the JMA catalog for "
                 f"year {year}: {error}"

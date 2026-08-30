@@ -7,6 +7,7 @@ and is skipped unless it is opted into explicitly.
 
 from __future__ import annotations
 
+import http.client
 import io
 from collections.abc import Generator
 from pathlib import Path
@@ -24,6 +25,7 @@ from tests.infrastructure.recorded_transport import (
     DribblingStream,
     FailingStream,
     IncompleteReadStream,
+    RaisingTransport,
     RecordedTransport,
 )
 
@@ -597,6 +599,67 @@ class TestTruncatedTransfer:
             source.record_lines(1919)
 
         assert list(tmp_path.iterdir()) == []
+
+
+class TestConnectionFailuresUrllibDoesNotWrap:
+    """Failures from `urlopen` that are not `OSError`.
+
+    `urllib.request.AbstractHTTPHandler.do_open` wraps its `h.request(...)` in
+    `except OSError`, but calls `h.getresponse()` *outside* that wrap. So every
+    `http.client.HTTPException` raised while reading the status line and headers
+    propagates unwrapped — realistic against a broken proxy, a captive portal
+    answering with its own protocol, or a TLS handshake reaching a plaintext
+    port. `RemoteDisconnected` happens to be fine because it is also a
+    `ConnectionResetError`; these are not.
+    """
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            http.client.BadStatusLine("\x16\x03\x01\x02"),
+            http.client.LineTooLong("status line"),
+            http.client.InvalidURL("nonnumeric port"),
+        ],
+        ids=["BadStatusLine", "LineTooLong", "InvalidURL"],
+    )
+    def test_it_is_a_retryable_port_error(
+        self, tmp_path: Path, error: Exception
+    ) -> None:
+        transport = RaisingTransport(error)
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=1
+        )
+
+        with pytest.raises(CatalogRetrievalError) as caught:
+            source.record_lines(1919)
+
+        assert caught.value.retryable is True
+        # The retry loop re-wraps, so the native exception is further down the
+        # chain — but it must still be *on* it: a failure the port reports
+        # without preserving what actually happened is not debuggable.
+        chain: list[BaseException] = []
+        current: BaseException | None = caught.value
+        while current is not None:
+            chain.append(current)
+            current = current.__cause__
+        assert error in chain
+
+    def test_it_is_retried_rather_than_failing_on_the_first_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A broken proxy is transient, so the retry budget should apply.
+
+        Escaping as a native exception skipped the retry loop entirely.
+        """
+        transport = RaisingTransport(http.client.BadStatusLine(""))
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=transport, max_attempts=3
+        )
+
+        with pytest.raises(CatalogRetrievalError):
+            source.record_lines(1919)
+
+        assert transport.call_count == 3
 
 
 class TestIterationDoesNotMaskCallerErrors:

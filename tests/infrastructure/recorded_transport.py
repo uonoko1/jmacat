@@ -172,3 +172,26 @@ def IncompleteReadStream(  # noqa: N802 - reads as a constructor at the call sit
 ) -> io.BufferedReader:
     """A body that fails mid-transfer with `http.client.IncompleteRead`."""
     return io.BufferedReader(_IncompleteReadRaw(body, fail_after=fail_after))
+
+
+class RaisingTransport:
+    """A `Transport` whose `fetch` raises a chosen native exception.
+
+    Distinct from `RecordedTransport(responses=[error])`, which raises *after*
+    recording the URL and is aimed at retry scripting. This one models the
+    class of failure urllib lets escape from `urlopen` itself — notably
+    `http.client.BadStatusLine`, which `do_open` cannot wrap because it calls
+    `getresponse()` outside its own `except OSError`.
+    """
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.requested_urls: list[str] = []
+
+    def fetch(self, url: str, *, timeout: float) -> Response:
+        self.requested_urls.append(url)
+        raise self._error
+
+    @property
+    def call_count(self) -> int:
+        return len(self.requested_urls)
