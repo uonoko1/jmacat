@@ -224,8 +224,11 @@ class TestEventWriterLifecycle:
         """A half-written Parquet file must not be left behind on error."""
         writer = InMemoryEventWriter[str]()
 
-        # Not combined into one `with`: the writer's __exit__ must run inside the
-        # `raises` scope, which is exactly the close-on-error path under test.
+        # Kept as two `with` statements for readability: the nesting shows that
+        # the writer is what fails inside, and `raises` is only the harness
+        # around it. Combining them would behave identically - `with A, B:` is
+        # defined as nested `with`, so __exit__ ordering is unchanged - so this
+        # is a style choice, not a correctness one.
         with pytest.raises(RuntimeError):  # noqa: SIM117
             with writer:
                 writer.write("a")
@@ -254,8 +257,8 @@ class TestEventWriterFailure:
     def test_the_failing_fake_still_closes_so_cleanup_paths_are_testable(self) -> None:
         writer = FailingEventWriter[str]()
 
-        # Not combined: __exit__ must run inside the `raises` scope so the test can
-        # assert the destination was still closed after a failing write.
+        # Kept split for the same readability reason as above; `with A, B:` would
+        # be equivalent, not different.
         with pytest.raises(EventWriterError):  # noqa: SIM117
             with writer:
                 writer.write("a")
