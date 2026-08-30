@@ -12,6 +12,8 @@ raises a typed error naming the field; nothing falls back to a plausible value.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 RECORD_LENGTH = 96
 """Bytes per record, excluding the LF terminator (format doc, field table)."""
 
@@ -46,6 +48,75 @@ class FieldError(RecordError):
         self.raw = raw
         self.reason = reason
         super().__init__(f"{field} (columns {columns}) is {raw!r}: {reason}")
+
+
+MINUTES_PER_DEGREE = Decimal(60)
+"""Sexagesimal wheel. A minutes field reaching 60 means the slice is wrong."""
+
+
+def _signed_degrees(raw: str, *, field: str) -> tuple[int, Decimal]:
+    """Split a degree field into its sign and magnitude.
+
+    Format doc, Traps 2: the sign lives in the leftmost column of the *degree*
+    field and the digits are right-aligned, so a one-digit southern latitude
+    reads `- 7` - a space *between* the sign and the digit. `int("- 7")`
+    raises, so interior spaces are removed before converting. The minutes field
+    is always unsigned and inherits this sign.
+    """
+    sign = -1 if "-" in raw else 1
+    digits = raw.replace("-", "").replace(" ", "")
+    if not digits.isdigit():
+        raise FieldError(field, "degrees", raw, "not an integer number of degrees")
+    return sign, Decimal(digits)
+
+
+def _fixed_point(raw: str, *, field: str, columns: str) -> Decimal | None:
+    """Decode a JMA fixed-point field (`F4.2`, `F5.2`, `F3.2`).
+
+    Format doc, Traps 9: these fields are *fixed-position*. The last two
+    columns hold the two decimal places and the leading columns the integer
+    part. JMA blanks the decimal columns when the hypocenter is fixed while
+    keeping the integer part in place, so `.strip()` on the whole field deletes
+    the decimals rather than the padding and the surviving digits are then read
+    as if they had been decimals - `int("06  ".strip()) / 100` gives 0.06 min
+    where the truth is 6.00 min, an 11 km error that raises nothing.
+
+    So the two parts are sliced separately. Blank decimals mean *unknown
+    decimals* on a value that is present; a wholly blank field means *no value*
+    and returns `None` (Traps 6).
+    """
+    integer_part, decimal_part = raw[:-2].strip(), raw[-2:].strip()
+    if not integer_part and not decimal_part:
+        return None
+    if integer_part and not integer_part.isdigit():
+        raise FieldError(field, columns, raw, "integer part is not a number")
+    if decimal_part and not decimal_part.isdigit():
+        raise FieldError(field, columns, raw, "decimal part is not a number")
+    # A blank decimal part contributes 0 to the arithmetic; the value is the
+    # integer part at reduced precision, not an absent value.
+    return Decimal(integer_part or 0) + Decimal(decimal_part or 0) / 100
+
+
+def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
+    """Degrees plus decimal minutes -> decimal degrees, sign included.
+
+    Format doc, Traps 1: `354059` in c22-28 is 35 deg 40.59 min = 35.6765 deg,
+    not 35.4059 deg - the two differ by roughly 27 km. Traps 2: the sign from
+    the degree field applies to the minutes as well.
+    """
+    sign, whole = _signed_degrees(degrees, field=field)
+    fraction = _fixed_point(minutes, field=field, columns="minutes")
+    if fraction is None:
+        raise FieldError(field, "minutes", minutes, "minutes are blank")
+    if fraction >= MINUTES_PER_DEGREE:
+        raise FieldError(
+            field,
+            "minutes",
+            minutes,
+            f"{fraction} minutes is not below {MINUTES_PER_DEGREE}; "
+            "a sexagesimal field can never reach 60, so the slice is wrong",
+        )
+    return sign * (whole + fraction / MINUTES_PER_DEGREE)
 
 
 def parse_record(line: str) -> None:
