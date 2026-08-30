@@ -253,3 +253,101 @@ def bounding_box(box: BoundingBox) -> Callable[[FilterableEvent], bool]:
         return box.contains(event.latitude, event.longitude)
 
     return predicate
+
+
+class UnknownAreaError(FilterError):
+    """A named area is not in `NAMED_AREAS`.
+
+    Raised rather than resolving to an empty box: an empty box returns zero
+    events, which a user reads as "no earthquakes happened there" instead of
+    "you misspelled the name".
+    """
+
+
+def _dms(degrees: int, minutes: int, seconds: float) -> float:
+    """Degrees/minutes/seconds to signed decimal degrees.
+
+    The published prefecture extents are given in DMS; converting here rather
+    than committing pre-rounded decimals keeps each number visibly traceable
+    to the figure in the citation.
+    """
+    return degrees + minutes / 60 + seconds / 3600
+
+
+#: Named areas, each an **approximate rectangle**, not a boundary.
+#:
+#: **The MVP decision, and its limitation.** These are hand-maintained bounding
+#: boxes kept in this repository. They are *not* prefecture polygons, and this
+#: layer deliberately does not attempt a point-in-prefecture test.
+#:
+#: A rectangle drawn around a prefecture's extreme points necessarily includes
+#: territory outside it — for Ishikawa the box spans the Noto peninsula's
+#: north-east tip and the south-west coast, so it also covers parts of Toyama,
+#: Gifu, Fukui and a large area of the Sea of Japan. A user filtering
+#: `ishikawa` gets *events in a box around Ishikawa*, which is a usefully
+#: narrower slice of 257,000 records but is not "events in Ishikawa
+#: prefecture". Measured on `h2023`, the box selects 31,954 of 257,020
+#: records; the JMA region names on those records show 21,813 NOTO PENINSULA
+#: REGION and 9,173 OFF NOTO PENINSULA as intended, but also 205 TOYAMA GIFU
+#: BORDER REG, 189 CENTRAL FUKUI PREF, 178 NORTHERN GIFU PREF and 94 TOYAMA
+#: PREF — about 2 per cent of the result lies outside the prefecture.
+#:
+#: Anyone needing the real boundary needs a polygon dataset and a
+#: point-in-polygon test, which brings an authoritative source, a licence
+#: review, and a dependency this standard-library-only layer cannot take.
+#:
+#: The alternative was rejected on those grounds: a prefecture polygon from an
+#: unverified source that a researcher mistakes for authoritative is worse than
+#: a rectangle that says plainly what it is. The approximation is therefore
+#: visible in the API — every box carries its `description`, which names the
+#: source and the word "approximate" — and not only in the documentation.
+#:
+#: Each box's numbers must cite where they came from. Do not add an area whose
+#: extent you cannot attribute.
+NAMED_AREAS: dict[str, BoundingBox] = {
+    # Extreme points published by the Ishikawa prefectural government, sourced
+    # to GSI (国土地理院) and stated to be in the World Geodetic System:
+    #   north 37 deg 51' 28" N  Hegurajima, Ama-machi, Wajima
+    #   south 36 deg 04' 01" N  Mt Akatsuka, Hakusan
+    #   east  137 deg 21' 55" E Himejima, Misaki-machi, Suzu
+    #   west  136 deg 14' 35" E Shioya fishing port, Kaga
+    # <https://www.pref.ishikawa.lg.jp/kensei/koho/gaiyo/p0.html>
+    "ishikawa": BoundingBox(
+        south=_dms(36, 4, 1),
+        north=_dms(37, 51, 28),
+        west=_dms(136, 14, 35),
+        east=_dms(137, 21, 55),
+        description=(
+            "Approximate bounding box around Ishikawa prefecture, from its "
+            "four extreme points as published by the prefecture (source: GSI, "
+            "World Geodetic System). NOT a prefecture boundary: the rectangle "
+            "also covers parts of Toyama, Gifu and Fukui and a large area of "
+            "the Sea of Japan. "
+            "https://www.pref.ishikawa.lg.jp/kensei/koho/gaiyo/p0.html"
+        ),
+    ),
+}
+
+
+def available_area_names() -> tuple[str, ...]:
+    """The names `named_area` accepts, sorted."""
+    return tuple(sorted(NAMED_AREAS))
+
+
+def named_area(name: str) -> BoundingBox:
+    """Resolve a named area to its approximate bounding box.
+
+    Lookup ignores surrounding whitespace and case. The returned box is an
+    approximation, not a boundary — see `NAMED_AREAS` — and carries that
+    caveat in its `description`.
+
+    Raises:
+        UnknownAreaError: the name is not one of `available_area_names()`.
+    """
+    key = name.strip().lower()
+    try:
+        return NAMED_AREAS[key]
+    except KeyError:
+        raise UnknownAreaError(
+            f"Unknown area {name!r}. Available: {', '.join(available_area_names())}."
+        ) from None

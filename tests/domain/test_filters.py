@@ -11,9 +11,12 @@ from jmacat.domain.filters import (
     BoundingBox,
     FilterError,
     NaiveDatetimeError,
+    UnknownAreaError,
+    available_area_names,
     bounding_box,
     depth_range,
     magnitude_range,
+    named_area,
     time_range,
 )
 
@@ -303,3 +306,65 @@ def test_bounding_box_rejects_an_out_of_range_coordinate() -> None:
         )
     with pytest.raises(FilterError):
         BoundingBox(south=35.0, north=36.0, west=140.0, east=200.0, description="test")
+
+
+def test_named_area_resolves_ishikawa_to_a_bounding_box() -> None:
+    """The box is the land extent of Ishikawa prefecture, from the four
+    extreme points published by the prefecture (sourced to GSI, World Geodetic
+    System): N 37 deg 51'28" (Hegurajima), S 36 deg 04'01" (Mt Akatsuka),
+    E 137 deg 21'55" (Himejima), W 136 deg 14'35" (Shioya fishing port).
+    <https://www.pref.ishikawa.lg.jp/kensei/koho/gaiyo/p0.html>
+    """
+    box = named_area("ishikawa")
+    assert box.north == pytest.approx(37 + 51 / 60 + 28 / 3600)
+    assert box.south == pytest.approx(36 + 4 / 60 + 1 / 3600)
+    assert box.east == pytest.approx(137 + 21 / 60 + 55 / 3600)
+    assert box.west == pytest.approx(136 + 14 / 60 + 35 / 3600)
+
+
+def test_named_area_lookup_is_case_insensitive_and_trims_whitespace() -> None:
+    assert named_area("  Ishikawa ") == named_area("ishikawa")
+
+
+def test_named_area_rejects_an_unknown_name() -> None:
+    """An unknown name raises rather than resolving to an empty box, which
+    would silently return zero events and look like "no earthquakes there".
+    """
+    with pytest.raises(UnknownAreaError):
+        named_area("atlantis")
+
+
+def test_unknown_area_error_lists_the_available_names() -> None:
+    with pytest.raises(UnknownAreaError) as excinfo:
+        named_area("atlantis")
+    assert "ishikawa" in str(excinfo.value)
+
+
+def test_named_area_box_description_states_it_is_an_approximation() -> None:
+    """A user filtering "ishikawa" must not believe they got a prefecture
+    boundary. The approximation is visible in the API, not only in the docs.
+    """
+    description = named_area("ishikawa").description
+    assert "approximate" in description.lower()
+    assert "pref.ishikawa.lg.jp" in description
+
+
+def test_named_area_ishikawa_admits_the_2023_noto_peninsula_event() -> None:
+    """`h2023` example H is NOTO PENINSULA REGION at 37 deg 32.34' N,
+    137 deg 18.27' E - inside the prefecture's extent.
+    """
+    predicate = bounding_box(named_area("ishikawa"))
+    noto = event(latitude=37 + 32.34 / 60, longitude=137 + 18.27 / 60)
+    assert predicate(noto) is True
+
+
+def test_named_area_ishikawa_rejects_a_chiba_event() -> None:
+    """`h2023` line 1, NEAR CHOSHI CITY at 35.676500N 140.654500E."""
+    predicate = bounding_box(named_area("ishikawa"))
+    assert predicate(event()) is False
+
+
+def test_available_area_names_are_sorted_and_include_ishikawa() -> None:
+    names = available_area_names()
+    assert "ishikawa" in names
+    assert list(names) == sorted(names)
