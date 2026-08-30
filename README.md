@@ -390,6 +390,17 @@ result.reconciles()  # True
 Every command-line option is a parameter of that function; a test reads the
 signature and requires `--help` to advertise each one.
 
+**There is deliberately no example notebook.** A notebook would have to earn
+its place against the snippet above, and it cannot: the output is an ordinary
+Parquet or CSV file, so the moment jmacat's job ends is the moment a reader's
+own tools take over. A notebook demonstrating `pandas.read_parquet` would be
+teaching pandas, not this tool, while adding pandas, matplotlib and a Jupyter
+kernel — none of which this project depends on — to what a contributor must
+install to reproduce the docs, plus committed cell outputs that no gate checks
+and that go stale silently. The four commands in this README are executed and
+pasted verbatim, and the schema table is verified against the code by a test;
+a notebook would be the one artefact here that nothing keeps honest.
+
 ### Named areas
 
 `--area` selects an **approximate bounding box**, not a prefecture boundary.
