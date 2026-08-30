@@ -76,7 +76,9 @@ def parse_page(source: str) -> dict[tuple[int, int], str]:
             key = (district, int(region))
             previous = mapping.get(key)
             if previous is not None and previous != name:
-                raise ValueError(f"conflicting names for {key}: {previous!r} vs {name!r}")
+                raise ValueError(
+                    f"conflicting names for {key}: {previous!r} vs {name!r}"
+                )
             mapping[key] = name
     return mapping
 
