@@ -12,8 +12,10 @@ raises a typed error naming the field; nothing falls back to a plausible value.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from enum import Enum
 
 RECORD_LENGTH = 96
 """Bytes per record, excluding the LF terminator (format doc, field table)."""
@@ -256,8 +258,163 @@ def depth_km(raw: str) -> Decimal | None:
     return _fixed_point(raw, field="depth", columns="45-49")
 
 
-def parse_record(line: str) -> None:
-    """Decode one 96-byte hypocenter record."""
+class RecordType(Enum):
+    """Field 1 (c01): who determined the hypocenter (format doc, field table)."""
+
+    JMA = "J"
+    USGS = "U"
+    INTERNATIONAL = "I"
+    """Another international agency - ISC, IASPEI and the like."""
+
+
+# Column ranges, 1-indexed and inclusive, exactly as the specification's own
+# "Col." column gives them. Kept as named constants rather than inline slices
+# so that a shifted offset is a one-line change with a test behind it: the
+# format doc's Traps 4 records that these offsets were once derived by counting
+# characters in northern-hemisphere sample lines, which silently drops the sign
+# column on every southern and western record.
+LATITUDE_DEGREES = (22, 24)
+LATITUDE_MINUTES = (25, 28)
+LONGITUDE_DEGREES = (33, 36)
+LONGITUDE_MINUTES = (37, 40)
+DEPTH = (45, 49)
+MAGNITUDE_1 = (53, 54)
+MAGNITUDE_TYPE_1 = (55, 55)
+MAGNITUDE_2 = (56, 57)
+MAGNITUDE_TYPE_2 = (58, 58)
+DISTRICT = (65, 65)
+REGION_NUMBER = (66, 68)
+REGION_NAME = (69, 92)
+STATION_COUNT = (93, 95)
+
+
+@dataclass(frozen=True, slots=True)
+class Hypocenter:
+    """One earthquake hypocenter, in physical units.
+
+    Immutable: a decoded record is a value, and a caller that mutated one would
+    silently invalidate any comparison already made against it.
+
+    Every optional field is `None` when its columns are blank, never 0. The
+    format doc's Traps 6 is explicit that a `.strip() or "0"` fallback converts
+    "unknown" into "exactly zero", which is worse than raising.
+    """
+
+    record_type: RecordType
+    origin_time: datetime
+    """Aware, in JST (UTC+9). See `JST`; never naive."""
+    second_is_known: bool
+    """False when c14-17 was wholly blank, i.e. located only to the minute.
+
+    `origin_time` still has to render a second, so without this flag a caller
+    cannot tell an unknown second from a determined 00.00 s.
+    """
+    latitude: Decimal
+    longitude: Decimal
+    depth_km: Decimal | None
+    magnitude: Decimal | None
+    magnitude_type: str | None
+    magnitude_2: Decimal | None
+    magnitude_type_2: str | None
+    district: int | None
+    region_number: int | None
+    region_name: str | None
+    station_count: int | None
+
+
+def _columns(line: str, span: tuple[int, int]) -> str:
+    """The 1-indexed, inclusive column range `span` of `line`.
+
+    The specification numbers columns from 1 and includes both ends, so the
+    conversion to a Python slice lives here once rather than at each use.
+    """
+    start, end = span
+    return line[start - 1 : end]
+
+
+def _optional_text(raw: str) -> str | None:
+    """A text field: blank means absent (Traps 6), not the empty string."""
+    return raw.strip() or None
+
+
+def _optional_integer(raw: str, *, field: str, columns: str) -> int | None:
+    """An integer field that may be blank. Blank is `None`, never 0."""
+    text = raw.strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise FieldError(field, columns, raw, "not an integer")
+    return int(text)
+
+
+def _span(span: tuple[int, int]) -> str:
+    """A column span rendered the way the specification writes it."""
+    start, end = span
+    return f"{start:02d}-{end:02d}" if start != end else f"{start:02d}"
+
+
+def parse_record(line: str) -> Hypocenter:
+    """Decode one 96-byte JMA hypocenter record into physical units.
+
+    Pure: no I/O, no clock, no global state. Raises `RecordLengthError` if the
+    line is the wrong width and `FieldError` - naming the field - if any field
+    cannot be decoded. Nothing is guessed and no unparseable field falls back
+    to a plausible value.
+    """
     if len(line) != RECORD_LENGTH:
         raise RecordLengthError(len(line))
-    return None
+
+    type_code = line[0]
+    try:
+        record_type = RecordType(type_code)
+    except ValueError as error:
+        raise FieldError(
+            "record type",
+            "01",
+            type_code,
+            "not one of the defined codes J, U and I",
+        ) from error
+
+    second = line[13:17]
+    return Hypocenter(
+        record_type=record_type,
+        origin_time=origin_time(
+            line[1:5], line[5:7], line[7:9], line[9:11], line[11:13], second
+        ),
+        # Blank decimals still mean a known second; only a wholly blank field
+        # means the second was never determined (format doc, Traps 9).
+        second_is_known=bool(second.strip()),
+        latitude=decimal_degrees(
+            _columns(line, LATITUDE_DEGREES),
+            _columns(line, LATITUDE_MINUTES),
+            field="latitude",
+        ),
+        longitude=decimal_degrees(
+            _columns(line, LONGITUDE_DEGREES),
+            _columns(line, LONGITUDE_MINUTES),
+            field="longitude",
+        ),
+        depth_km=depth_km(_columns(line, DEPTH)),
+        magnitude=magnitude(_columns(line, MAGNITUDE_1)),
+        magnitude_type=_optional_text(_columns(line, MAGNITUDE_TYPE_1)),
+        magnitude_2=magnitude(_columns(line, MAGNITUDE_2)),
+        magnitude_type_2=_optional_text(_columns(line, MAGNITUDE_TYPE_2)),
+        # District and region are carried as plain numbers and deliberately not
+        # validated against the appendix: the format doc's Unresolved 3 finds
+        # district 9 and region 8/400 in the data with no appendix entry, so a
+        # parser that rejected them would reject real records.
+        district=_optional_integer(
+            _columns(line, DISTRICT), field="district", columns=_span(DISTRICT)
+        ),
+        region_number=_optional_integer(
+            _columns(line, REGION_NUMBER),
+            field="region number",
+            columns=_span(REGION_NUMBER),
+        ),
+        region_name=_optional_text(_columns(line, REGION_NAME)),
+        station_count=_optional_integer(
+            _columns(line, STATION_COUNT),
+            field="station count",
+            columns=_span(STATION_COUNT),
+        ),
+    )

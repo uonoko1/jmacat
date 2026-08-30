@@ -7,7 +7,7 @@ verbatim record in the published catalog, which is not committed here.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -53,9 +53,9 @@ def test_the_largest_minutes_value_in_the_catalog_is_accepted() -> None:
     60-minute wheel must do. 59.99/60 = 0.999833... so the test states the
     exact rational rather than a rounded decimal.
     """
-    assert decimal_degrees(" 35", "5999", field="latitude") == Decimal(
-        "35"
-    ) + Decimal("59.99") / Decimal(60)
+    assert decimal_degrees(" 35", "5999", field="latitude") == Decimal("35") + Decimal(
+        "59.99"
+    ) / Decimal(60)
 
 
 def test_exactly_sixty_minutes_is_rejected_as_out_of_range() -> None:
@@ -325,9 +325,7 @@ def test_subtracting_nine_hours_reproduces_the_external_utc_catalogue() -> None:
     """
     when = origin_time("2023", "02", "06", "10", "17", "3434")
     assert when is not None
-    assert when.astimezone(timezone.utc) == datetime(
-        2023, 2, 6, 1, 17, 34, 340000, tzinfo=timezone.utc
-    )
+    assert when.astimezone(UTC) == datetime(2023, 2, 6, 1, 17, 34, 340000, tzinfo=UTC)
 
 
 def test_the_fractional_second_is_hundredths_not_a_bare_integer() -> None:
@@ -351,9 +349,7 @@ def test_a_blank_second_field_leaves_the_time_at_the_minute() -> None:
     for the flag that keeps "unknown" distinguishable from "exactly 00.00 s".
     """
     when = origin_time("1923", "09", "01", "12", "03", "    ")
-    assert when == datetime(
-        1923, 9, 1, 12, 3, tzinfo=timezone(timedelta(hours=9))
-    )
+    assert when == datetime(1923, 9, 1, 12, 3, tzinfo=timezone(timedelta(hours=9)))
 
 
 def test_a_second_field_with_blank_decimals_keeps_its_whole_seconds() -> None:
