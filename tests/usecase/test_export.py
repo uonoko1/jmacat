@@ -34,31 +34,36 @@ from tests.fakes import (
 # code and prove nothing.
 #
 # Chosen so that one magnitude filter produces all three outcomes at once.
+#
+# Each is a single 96-column literal and therefore exceeds the line limit;
+# `noqa: E501` is preferred to splitting it, because a record broken across
+# two string literals can no longer be compared byte-for-byte against the
+# archive by eye, which is the whole reason for quoting it verbatim.
 
 #: h1919 line 38. M6.1, SE OFF TOKACHI; above every bound used here.
-M61 = "J1919031219312449 049 413032 193 1441504 352  0     61J   5211  1 28SE OFF TOKACHI            9K"
+M61 = "J1919031219312449 049 413032 193 1441504 352  0     61J   5211  1 28SE OFF TOKACHI            9K"  # noqa: E501
 
 #: h1919 line 408. M3.0, NW GUNMA PREF; sits exactly on the `minimum=3.0`
 #: bound, which the closed range must keep.
-M30 = "J1921011809505958 227 362422     1383157      0     30J   571   3 81NW GUNMA PREF             2S"
+M30 = "J1921011809505958 227 362422     1383157      0     30J   571   3 81NW GUNMA PREF             2S"  # noqa: E501
 
 #: h1919 line 3346. M2.0, NORTHERN KYOTO PREF; below the bound, so an ordinary
 #: comparison failure.
-M20 = "J1927032408565221 004 353142 076 1351558 087 12     20J   151   5182NORTHERN KYOTO PREF       4K"
+M20 = "J1927032408565221 004 353142 076 1351558 087 12     20J   151   5182NORTHERN KYOTO PREF       4K"  # noqa: E501
 
 #: h1919 line 4. Magnitude columns 53-54 are blank: no magnitude was ever
 #: determined. 11,621 of the 28,235 h1919 records look like this.
-BLANK_MAGNITUDE = "J1919010518532883 087 372982 273 1383601 165  4           5711  4132MID NIIGATA PREF          5S"
+BLANK_MAGNITUDE = "J1919010518532883 087 372982 273 1383601 165  4           5711  4132MID NIIGATA PREF          5S"  # noqa: E501
 
 #: h1919 line 125. M3.1 - the bound CONTRIBUTING names as the one a raw float
 #: comparison gets wrong, where `Decimal("3.1") >= 3.1` is False.
-M31 = "J1919071919042792 048 360326 414 1401658 289 72     31d   5211  3 87SOUTHERN IBARAKI PREF    10K"
+M31 = "J1919071919042792 048 360326 414 1401658 289 72     31d   5211  3 87SOUTHERN IBARAKI PREF    10K"  # noqa: E501
 
 #: h1919 line 284. 36.239N 137.080E, inside the approximate Ishikawa box.
 #: Its region is TOYAMA GIFU BORDER REG rather than an Ishikawa name, which is
 #: the documented limitation of a rectangle standing in for a prefecture; the
 #: filter tests the coordinate, and so does this test.
-INSIDE_ISHIKAWA = "J1920052903245705 078 361432 300 1370482 345  2     45J   5211  4142TOYAMA GIFU BORDER REG   14K"
+INSIDE_ISHIKAWA = "J1920052903245705 078 361432 300 1370482 345  2     45J   5211  4142TOYAMA GIFU BORDER REG   14K"  # noqa: E501
 
 
 def _writer() -> InMemoryEventWriter[Hypocenter]:
@@ -302,7 +307,7 @@ def test_the_catalog_is_streamed_rather_than_materialised(
     source = InMemoryCatalogSource({1919: [M61, M30, M20]})
 
     class ObservingWriter(InMemoryEventWriter[Hypocenter]):
-        def write_many(self, events: object) -> None:  # type: ignore[override]
+        def write_many(self, events: object) -> None:
             observed.append(source.lines_yielded)
             super().write_many(events)  # type: ignore[arg-type]
 
