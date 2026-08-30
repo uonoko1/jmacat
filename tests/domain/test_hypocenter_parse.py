@@ -402,3 +402,29 @@ def test_a_written_zero_station_count_is_zero_not_absent() -> None:
     assert event.magnitude_2 is None
     assert event.district == 3
     assert event.region_number == 81
+
+
+def test_a_field_error_reports_the_columns_it_could_not_decode() -> None:
+    """The error must locate the bytes, not just name the field.
+
+    A record is 96 undelimited characters, so "latitude" alone leaves an
+    operator counting columns by hand against the specification. Latitude
+    minutes are c25-28 (format doc, field 10).
+    """
+    corrupt = NEAR_CHOSHI[:24] + "4O59" + NEAR_CHOSHI[28:]
+    with pytest.raises(FieldError) as caught:
+        parse_record(corrupt)
+    assert caught.value.columns == "25-28"
+    assert "25-28" in str(caught.value)
+
+
+def test_a_longitude_error_reports_the_longitude_columns() -> None:
+    """Triangulates the previous test: the columns must track the field.
+
+    Longitude minutes are c37-40, a different span from latitude's c25-28, so
+    a hardcoded string cannot satisfy both.
+    """
+    corrupt = NEAR_CHOSHI[:36] + "39X7" + NEAR_CHOSHI[40:]
+    with pytest.raises(FieldError) as caught:
+        parse_record(corrupt)
+    assert caught.value.columns == "37-40"

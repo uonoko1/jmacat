@@ -57,7 +57,7 @@ MINUTES_PER_DEGREE = Decimal(60)
 """Sexagesimal wheel. A minutes field reaching 60 means the slice is wrong."""
 
 
-def _signed_degrees(raw: str, *, field: str) -> tuple[int, Decimal]:
+def _signed_degrees(raw: str, *, field: str, columns: str) -> tuple[int, Decimal]:
     """Split a degree field into its sign and magnitude.
 
     Format doc, Traps 2: the sign lives in the leftmost column of the *degree*
@@ -69,7 +69,7 @@ def _signed_degrees(raw: str, *, field: str) -> tuple[int, Decimal]:
     sign = -1 if "-" in raw else 1
     digits = raw.replace("-", "").replace(" ", "")
     if not digits.isdigit():
-        raise FieldError(field, "degrees", raw, "not an integer number of degrees")
+        raise FieldError(field, columns, raw, "not an integer number of degrees")
     return sign, Decimal(digits)
 
 
@@ -100,15 +100,22 @@ def _fixed_point(raw: str, *, field: str, columns: str) -> Decimal | None:
     return Decimal(integer_part or 0) + Decimal(decimal_part or 0) / 100
 
 
-def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
+def decimal_degrees(
+    degrees: str,
+    minutes: str,
+    *,
+    field: str,
+    degree_columns: str = "degrees",
+    minute_columns: str = "minutes",
+) -> Decimal:
     """Degrees plus decimal minutes -> decimal degrees, sign included.
 
     Format doc, Traps 1: `354059` in c22-28 is 35 deg 40.59 min = 35.6765 deg,
     not 35.4059 deg - the two differ by roughly 27 km. Traps 2: the sign from
     the degree field applies to the minutes as well.
     """
-    sign, whole = _signed_degrees(degrees, field=field)
-    fraction = _fixed_point(minutes, field=field, columns="minutes")
+    sign, whole = _signed_degrees(degrees, field=field, columns=degree_columns)
+    fraction = _fixed_point(minutes, field=field, columns=minute_columns)
     if fraction is None:
         # Degrees present, minutes wholly blank: the epicentre is published to
         # the whole degree. Seven h1919 records do this, all with location
@@ -121,7 +128,7 @@ def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
     if fraction >= MINUTES_PER_DEGREE:
         raise FieldError(
             field,
-            "minutes",
+            minute_columns,
             minutes,
             f"{fraction} minutes is not below {MINUTES_PER_DEGREE}; "
             "a sexagesimal field can never reach 60, so the slice is wrong",
@@ -181,7 +188,7 @@ def origin_time(
         _integer_field(raw, field=name, columns=columns)
         for raw, (name, columns) in zip(raws, ORIGIN_TIME_COLUMNS.items(), strict=True)
     ]
-    seconds = _fixed_point(second, field="second", columns="14-17") or Decimal(0)
+    seconds = _fixed_point(second, field="second", columns=_span(SECOND)) or Decimal(0)
     whole_seconds, fraction = divmod(seconds, 1)
     try:
         return datetime(
@@ -197,7 +204,7 @@ def origin_time(
     except ValueError as error:
         raise FieldError(
             "origin time",
-            "02-17",
+            f"{YEAR[0]:02d}-{SECOND[1]:02d}",
             "".join(raws) + second,
             str(error),
         ) from error
@@ -211,7 +218,7 @@ NEGATIVE_MAGNITUDE_UNITS = {"-": 0, "A": 1, "B": 2, "C": 3}
 """
 
 
-def magnitude(raw: str) -> Decimal | None:
+def magnitude(raw: str, *, columns: str = "53-54/56-57") -> Decimal | None:
     """Field 17 or 19 (`F2.1`) -> a signed magnitude.
 
     Format doc, *Magnitude* and Traps 3: micro-earthquakes go below zero and
@@ -226,13 +233,13 @@ def magnitude(raw: str) -> Decimal | None:
         return None
     head, tenths = raw[0], raw[1:]
     if not tenths.isdigit():
-        raise FieldError("magnitude", "53-54/56-57", raw, "tenths digit is not a digit")
+        raise FieldError("magnitude", columns, raw, "tenths digit is not a digit")
     if head.isdigit():
         return Decimal(f"{head}.{tenths}")
     units = NEGATIVE_MAGNITUDE_UNITS.get(head)
     if units is None:
         raise FieldError(
-            "magnitude", "53-54/56-57", raw, f"unknown magnitude sign code {head!r}"
+            "magnitude", columns, raw, f"unknown magnitude sign code {head!r}"
         )
     return -(Decimal(units) + Decimal(tenths) / 10)
 
@@ -260,9 +267,9 @@ def depth_km(raw: str) -> Decimal | None:
         if not whole:
             return None
         if not whole.isdigit():
-            raise FieldError("depth", "45-49", raw, "not an integer number of km")
+            raise FieldError("depth", _span(DEPTH), raw, "not an integer number of km")
         return Decimal(whole)
-    return _fixed_point(raw, field="depth", columns="45-49")
+    return _fixed_point(raw, field="depth", columns=_span(DEPTH))
 
 
 class RecordType(Enum):
@@ -416,18 +423,22 @@ def parse_record(line: str) -> Hypocenter:
             _columns(line, LATITUDE_DEGREES),
             _columns(line, LATITUDE_MINUTES),
             field="latitude",
+            degree_columns=_span(LATITUDE_DEGREES),
+            minute_columns=_span(LATITUDE_MINUTES),
         ),
         latitude_minutes_are_known=bool(_columns(line, LATITUDE_MINUTES).strip()),
         longitude=decimal_degrees(
             _columns(line, LONGITUDE_DEGREES),
             _columns(line, LONGITUDE_MINUTES),
             field="longitude",
+            degree_columns=_span(LONGITUDE_DEGREES),
+            minute_columns=_span(LONGITUDE_MINUTES),
         ),
         longitude_minutes_are_known=bool(_columns(line, LONGITUDE_MINUTES).strip()),
         depth_km=depth_km(_columns(line, DEPTH)),
-        magnitude=magnitude(_columns(line, MAGNITUDE_1)),
+        magnitude=magnitude(_columns(line, MAGNITUDE_1), columns=_span(MAGNITUDE_1)),
         magnitude_type=_optional_text(_columns(line, MAGNITUDE_TYPE_1)),
-        magnitude_2=magnitude(_columns(line, MAGNITUDE_2)),
+        magnitude_2=magnitude(_columns(line, MAGNITUDE_2), columns=_span(MAGNITUDE_2)),
         magnitude_type_2=_optional_text(_columns(line, MAGNITUDE_TYPE_2)),
         # District and region are carried as plain numbers and deliberately not
         # validated against the appendix: the format doc's Unresolved 3 finds
