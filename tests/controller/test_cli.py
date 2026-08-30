@@ -620,7 +620,7 @@ def test_every_exclusion_line_says_what_it_counted_over() -> None:
     )
 
     body = "\n".join(lines)
-    assert "of the 28,235 records read" in body
+    assert "of the 28,235 parsed records" in body
     assert "of the 86 that reached it" in body
 
 
@@ -779,3 +779,31 @@ def test_a_multi_filter_run_reports_counts_about_the_area_asked_for(
     assert "40.0%" not in missing_line
     # Nothing inside the box fell below M3.0, so no comparison line for it.
     assert "excluded by magnitude" not in result.output
+
+
+def test_the_first_filters_denominator_does_not_claim_to_be_the_lines_read() -> None:
+    """Unparsed lines never reach a filter, so the two numbers legitimately differ.
+
+    With 15 lines unparsed, the header says 28,235 read and the first filter
+    judged 28,220. Calling the smaller figure "records read" puts two different
+    numbers under one name on the same screen -- the exact class of defect this
+    report was corrected for. It is named as what it is: parsed records.
+    """
+    lines = report(
+        _result(
+            read=28_235,
+            written=15_863,
+            rejected=15,
+            outcomes=(
+                _outcome(
+                    "magnitude", by_comparison=740, missing=11_617, reaching=28_220
+                ),
+            ),
+        )
+    )
+
+    body = "\n".join(lines)
+    assert "of the 28,220 parsed records" in body
+    assert "28,220 records read" not in body
+    # The header still reports the lines actually read, unchanged.
+    assert "Read 28,235 records from the 1919 catalog." in lines

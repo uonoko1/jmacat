@@ -333,9 +333,14 @@ def _outcome_lines(outcome: FilterOutcome, *, is_first: bool) -> list[str]:
     it has no predecessor to be a residue of and "of those that reached it"
     would be false; every later one judges only what its predecessors admitted,
     and a bare count there is the defect this function exists to avoid.
+
+    "Parsed records", not "records read": a line that failed to parse reached no
+    filter, so on a run with rejections this denominator is legitimately smaller
+    than the header's read count, and naming both "read" would put two different
+    numbers under one word on the same screen.
     """
     over = (
-        f"of the {outcome.records_reaching:,} records read"
+        f"of the {outcome.records_reaching:,} parsed records"
         if is_first
         else f"of the {outcome.records_reaching:,} that reached it"
     )
