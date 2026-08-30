@@ -87,6 +87,25 @@ ARCHIVE_FAILURES: Final = (
     OSError,
 )
 
+#: The longest line the reader will assemble, in characters.
+#:
+#: Without a bound, `readline()` reads until it finds a terminator — so a member
+#: containing no newline at all is read into a single string, and the streaming
+#: guarantee this adapter is built around evaporates. That is not hypothetical:
+#: a 204 KB archive expanding to 200 MB of one character peaks at ~2,000x the
+#: bytes accepted from the network, and the archive passes the magic-byte check,
+#: the central-directory check and the single-member check on the way in.
+#:
+#: 64 KiB is chosen as *unmistakably* over-generous rather than tight. A JMA
+#: record is a documented fixed 96 bytes (docs/jma-hypocenter-format.md), so the
+#: cap sits ~680x above the only line length the format defines — no plausible
+#: revision of it, nor a hand-edited file with a long comment or a merged pair
+#: of records, comes close. Deliberately not sized to the record: a cap near
+#: 96 would turn a benign format change into data loss, whereas this one can
+#: only fire on input that is not the JMA catalog. It is also, conveniently,
+#: the same order as `CHUNK_BYTES`, so the memory ceiling is unchanged.
+MAX_LINE_CHARS: Final = 64 * 1024
+
 DEFAULT_TIMEOUT_SECONDS: Final = 30.0
 
 #: Three attempts total. A transient JMA hiccup usually clears on the first
@@ -536,15 +555,50 @@ class JmaCatalogSource:
         try:
             while True:
                 try:
-                    line = text.readline()
+                    # Bounded, and asking for one character *past* the cap.
+                    # The cap alone cannot tell an over-long line from a legal
+                    # one: `readline(n)` returns exactly n characters both when
+                    # it gave up mid-line and when the line was n characters
+                    # long. Reading n+1 makes the terminator the discriminator
+                    # instead of the length — a line the reader saw the end of
+                    # comes back with its "\n", and one it did not does not.
+                    line = text.readline(MAX_LINE_CHARS + 1)
                 except ARCHIVE_FAILURES as error:
                     raise self._unreadable(archive_path, year, error) from error
                 if not line:
                     return
+                if len(line) > MAX_LINE_CHARS and not line.endswith("\n"):
+                    # Not `len(line) > MAX_LINE_CHARS` on its own: a legal line
+                    # of exactly the cap *plus* its terminator is one character
+                    # over and perfectly fine. The unterminated case is the
+                    # only one where the reader stopped because it hit the cap
+                    # rather than because the line ended.
+                    #
+                    # A final line at end of file legitimately has no
+                    # terminator, but it cannot reach here: to be this long it
+                    # would have to exceed the cap, which the format does not
+                    # allow, and a shorter one fails the length test first.
+                    raise self._overlong_line(archive_path, year)
                 yield line.rstrip("\r\n")
         finally:
             text.close()  # closes `raw` too
             archive.close()
+
+    def _overlong_line(self, archive_path: Path, year: int) -> CatalogRetrievalError:
+        """A line longer than the cap: not the JMA catalog, whatever else it is.
+
+        Raised rather than truncated. Silently splitting an over-long line
+        would hand the domain parser two half-records that might individually
+        look plausible, which is the quiet wrong answer CONTRIBUTING's "fail
+        loudly" rule exists to prevent.
+        """
+        return CatalogRetrievalError(
+            f"A line in the JMA archive for year {year} at {archive_path} "
+            f"exceeded {MAX_LINE_CHARS:,} characters without a terminator. A "
+            f"JMA record is 96 bytes, so this file is not the published "
+            f"catalog — it is corrupt, or it is some other archive under that "
+            f"name. Delete it and re-run to download a fresh copy."
+        )
 
     def _unreadable(
         self, archive_path: Path, year: int, error: Exception

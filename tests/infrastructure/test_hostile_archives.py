@@ -21,7 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from jmacat.infrastructure.jma_catalog_source import JmaCatalogSource
+from jmacat.infrastructure.jma_catalog_source import (
+    MAX_LINE_CHARS,
+    JmaCatalogSource,
+)
 from jmacat.usecase.errors import CatalogRetrievalError, PortError
 from tests.infrastructure.recorded_transport import RecordedTransport
 
@@ -83,6 +86,27 @@ def corrupt_deflate_zip() -> bytes:
     for index in range(start + 20, start + 60):
         raw[index] ^= 0xFF
     return bytes(raw)
+
+
+def unterminated_member_zip(*, expanded_bytes: int) -> bytes:
+    """A small archive whose single member is `expanded_bytes` with no newline.
+
+    The zip bomb. Every check the adapter makes before reading — magic bytes,
+    central directory, exactly one member — passes, because the archive really
+    is a well-formed one-member ZIP. What is hostile is the *content*: with no
+    terminator anywhere, an unbounded `readline()` must materialise the entire
+    expansion in one string.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("h1919", "w") as member:
+            chunk = b"A" * (1024 * 1024)
+            written = 0
+            while written < expanded_bytes:
+                count = min(len(chunk), expanded_bytes - written)
+                member.write(chunk[:count])
+                written += count
+    return buffer.getvalue()
 
 
 def _zip_transport(body: bytes) -> RecordedTransport:
@@ -163,6 +187,94 @@ class TestCorruptCompressedStream:
 
         with pytest.raises(CatalogRetrievalError):
             list(source.record_lines(1919))
+
+
+class TestUnboundedLine:
+    """A member with no newline must not be read into memory in one string."""
+
+    def test_a_member_without_a_newline_is_rejected(self, tmp_path: Path) -> None:
+        body = unterminated_member_zip(expanded_bytes=4 * MAX_LINE_CHARS)
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=_zip_transport(body), max_attempts=1
+        )
+
+        with pytest.raises(CatalogRetrievalError, match="line"):
+            list(source.record_lines(1919))
+
+    def test_the_rejection_happens_before_the_expansion_is_materialised(
+        self, tmp_path: Path
+    ) -> None:
+        """The streaming guarantee, restated for a hostile input.
+
+        A 200 MB member compresses to ~200 KB, so an unbounded `readline()`
+        peaks at roughly 2,000x the bytes accepted from the network. The cap
+        must hold peak memory to the same order as an ordinary read buffer,
+        regardless of how far the expansion would have gone.
+        """
+        import tracemalloc
+
+        expanded = 200 * 1024 * 1024
+        body = unterminated_member_zip(expanded_bytes=expanded)
+        source = JmaCatalogSource(
+            cache_dir=tmp_path, transport=_zip_transport(body), max_attempts=1
+        )
+
+        tracemalloc.start()
+        baseline = tracemalloc.get_traced_memory()[0]
+        with pytest.raises(CatalogRetrievalError):
+            list(source.record_lines(1919))
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        assert peak - baseline < 4 * 1024 * 1024, (
+            f"peak {peak - baseline:,} bytes rejecting a {expanded:,}-byte "
+            f"expansion from a {len(body):,}-byte archive"
+        )
+
+    def test_a_real_record_is_nowhere_near_the_cap(self, tmp_path: Path) -> None:
+        """The cap must not touch real data.
+
+        A JMA record is a documented fixed 96 bytes. Reading a year of them
+        must be unaffected, and the final line without a terminator — legal at
+        end of file — must still be yielded rather than mistaken for a
+        truncation.
+        """
+        payload = b"".join(
+            b"J" + str(index % 10).encode() * 95 + b"\n" for index in range(50)
+        )
+        payload += b"J" + b"9" * 95  # last line, no terminator
+        source = JmaCatalogSource(
+            cache_dir=tmp_path,
+            transport=_zip_transport(_one_member_zip(payload)),
+            max_attempts=1,
+        )
+
+        lines = list(source.record_lines(1919))
+
+        assert len(lines) == 51
+        assert all(len(line) == RECORD_BYTES for line in lines)
+        assert MAX_LINE_CHARS > 100 * RECORD_BYTES, (
+            "the cap must leave room for records far longer than JMA's"
+        )
+
+    def test_a_line_of_exactly_the_cap_is_not_mistaken_for_an_overrun(
+        self, tmp_path: Path
+    ) -> None:
+        """The boundary case `readline(n)` cannot distinguish on its own.
+
+        `readline(n)` returns exactly n characters both when it truncated a
+        longer line and when the line was exactly n characters with no
+        terminator. Reading one character past the cap is what tells them
+        apart; without that, a legal line of exactly the cap length is rejected.
+        """
+        payload = b"B" * MAX_LINE_CHARS + b"\n"
+        source = JmaCatalogSource(
+            cache_dir=tmp_path,
+            transport=_zip_transport(_one_member_zip(payload)),
+            max_attempts=1,
+        )
+
+        assert list(source.record_lines(1919)) == ["B" * MAX_LINE_CHARS]
 
 
 class TestCachePathFailures:
