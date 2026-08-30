@@ -346,3 +346,59 @@ def test_a_trailing_newline_is_not_silently_accepted() -> None:
     """
     with pytest.raises(RecordLengthError):
         parse_record(NEAR_CHOSHI + "\n")
+
+
+def test_a_whole_degree_epicentre_is_flagged_as_reduced_precision() -> None:
+    """h1919, a 1923 Kanto aftershock. Verbatim, 96 bytes:
+
+        J192309011201         35         13930        0     65J    325Y     ...
+
+    Latitude minutes c25-28 are wholly blank, so the epicentre is known only to
+    the whole degree, 35 degN. 7 records in h1919 do this and none in h2023.
+    The format doc does not describe the case (see the conversion test of the
+    same name), so the flag exists to stop a decoded 35.000000 from reading as
+    a determination to the hundredth of a minute.
+    """
+    aftershock = (
+        "J192309011201         35         13930        0     65J    325Y     "
+        "SAGAMI BAY ?              5K"
+    )
+    assert len(aftershock) == 96
+    event = parse_record(aftershock)
+    assert event.latitude == Decimal(35)
+    assert event.latitude_minutes_are_known is False
+    assert event.longitude == Decimal("139.5")
+    assert event.longitude_minutes_are_known is True
+
+
+def test_an_ordinary_record_is_not_flagged_as_reduced_precision() -> None:
+    """The flags must not be constant: Example A has both minutes fields."""
+    event = parse_record(NEAR_CHOSHI)
+    assert event.latitude_minutes_are_known is True
+    assert event.longitude_minutes_are_known is True
+
+
+def test_a_written_zero_station_count_is_zero_not_absent() -> None:
+    """h1919 carries 247 records whose station count c93-95 is written `  0`.
+
+    Traps 6 runs in both directions. A blank field must not become 0, and an
+    explicitly written 0 must not become None: JMA distinguishes "no station
+    count published" from "zero stations contributed", and h2023 contains no
+    written zero at all, so only the historical file exercises this.
+    """
+    gunma = (
+        "J1922011412085902     362422     1383157      0           574   3 81"
+        "NW GUNMA PREF             0S"
+    )
+    assert len(gunma) == 96
+    event = parse_record(gunma)
+    assert event.station_count == 0
+    assert event.station_count is not None
+    # The same record has no magnitude at all (c53-57 blank), so the two
+    # readings of an empty field sit side by side in one record: a blank
+    # magnitude is None while a written-zero station count is 0.
+    assert event.magnitude is None
+    assert event.magnitude_type is None
+    assert event.magnitude_2 is None
+    assert event.district == 3
+    assert event.region_number == 81

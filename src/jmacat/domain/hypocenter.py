@@ -110,7 +110,14 @@ def decimal_degrees(degrees: str, minutes: str, *, field: str) -> Decimal:
     sign, whole = _signed_degrees(degrees, field=field)
     fraction = _fixed_point(minutes, field=field, columns="minutes")
     if fraction is None:
-        raise FieldError(field, "minutes", minutes, "minutes are blank")
+        # Degrees present, minutes wholly blank: the epicentre is published to
+        # the whole degree. Seven h1919 records do this, all with location
+        # precision `3` (fixed depth, human judgement). The format doc does not
+        # cover it - its Traps 9 contrasts blank decimals with a wholly blank
+        # field, but not a blank minutes field beside a populated degree field.
+        # Rejecting would discard real epicentres over a coarser precision;
+        # `minutes_are_known` on the record carries the lost precision instead.
+        return sign * whole
     if fraction >= MINUTES_PER_DEGREE:
         raise FieldError(
             field,
@@ -310,7 +317,16 @@ class Hypocenter:
     cannot tell an unknown second from a determined 00.00 s.
     """
     latitude: Decimal
+    latitude_minutes_are_known: bool
+    """False when c25-28 was wholly blank: the epicentre is whole-degree only.
+
+    Seven h1919 records are published this way. Without the flag a latitude of
+    exactly 35 would be indistinguishable from a determination of 35 deg 00.00
+    min, an accuracy claim JMA did not make.
+    """
     longitude: Decimal
+    longitude_minutes_are_known: bool
+    """False when c37-40 was wholly blank. See `latitude_minutes_are_known`."""
     depth_km: Decimal | None
     magnitude: Decimal | None
     magnitude_type: str | None
@@ -389,11 +405,13 @@ def parse_record(line: str) -> Hypocenter:
             _columns(line, LATITUDE_MINUTES),
             field="latitude",
         ),
+        latitude_minutes_are_known=bool(_columns(line, LATITUDE_MINUTES).strip()),
         longitude=decimal_degrees(
             _columns(line, LONGITUDE_DEGREES),
             _columns(line, LONGITUDE_MINUTES),
             field="longitude",
         ),
+        longitude_minutes_are_known=bool(_columns(line, LONGITUDE_MINUTES).strip()),
         depth_km=depth_km(_columns(line, DEPTH)),
         magnitude=magnitude(_columns(line, MAGNITUDE_1)),
         magnitude_type=_optional_text(_columns(line, MAGNITUDE_TYPE_1)),

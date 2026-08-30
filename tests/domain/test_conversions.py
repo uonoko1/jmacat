@@ -139,8 +139,6 @@ def test_blank_decimal_longitude_minutes_decode_the_same_way() -> None:
     assert decimal_degrees(" 139", "30  ", field="longitude") == Decimal("139.5")
 
 
-
-
 def test_a_non_numeric_degree_field_names_the_field() -> None:
     """Issue #3: a non-numeric value in a numeric field is a typed error."""
     with pytest.raises(FieldError) as caught:

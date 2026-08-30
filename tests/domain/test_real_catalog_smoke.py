@@ -100,16 +100,21 @@ def test_no_magnitude_exceeds_the_largest_earthquake_ever_recorded(
     assert max(magnitudes) < Decimal(10)
 
 
-def test_the_corpus_exercises_negative_magnitudes(events: list[Hypocenter]) -> None:
-    """Format doc, Traps 3: 24,882 h2023 records carry a negative magnitude 1.
+def test_no_magnitude_falls_below_the_documented_encoding_floor(
+    events: list[Hypocenter],
+) -> None:
+    """Format doc, Magnitude: `C9` is M-3.9, the most negative value encodable.
 
-    Asserted as a property of the corpus rather than a count, so the test holds
-    for whichever year's file is supplied. A parser that dropped the sign would
-    make this set empty.
+    Stated as a floor rather than "some magnitude is negative", because whether
+    negative magnitudes occur at all is a property of the era, not of the
+    parser: h2023 has 24,882 of them (Traps 3) while h1919 has none - detecting
+    micro-earthquakes needs the modern network. An assertion that they exist
+    would fail on the historical file for a reason that is not a defect.
+    The verbatim negative-magnitude records are pinned in the parse tests.
     """
-    assert any(
-        event.magnitude is not None and event.magnitude < 0 for event in events
-    )
+    magnitudes = [event.magnitude for event in events if event.magnitude is not None]
+    assert magnitudes
+    assert min(magnitudes) >= Decimal("-3.9")
 
 
 def test_every_origin_time_is_aware(events: list[Hypocenter]) -> None:
@@ -117,13 +122,24 @@ def test_every_origin_time_is_aware(events: list[Hypocenter]) -> None:
     assert all(event.origin_time.utcoffset() is not None for event in events)
 
 
-def test_a_blank_field_never_decodes_to_zero(events: list[Hypocenter]) -> None:
-    """Traps 6, over the whole corpus: absent is None, not 0.
+def test_a_blank_station_count_is_none_and_a_written_zero_is_zero(
+    events: list[Hypocenter],
+) -> None:
+    """Traps 6, over the whole corpus: absent is None and stays distinct from 0.
 
-    A station count of 0 would mean no station contributed, which cannot be
-    true of a record that exists; if the blank handling ever collapsed to a
-    fallback `0`, the blank station counts would show up here.
+    Both values are real. h1919 carries 247 records whose station count c93-95
+    is written `  0` - an explicit zero, which must decode to 0 - alongside
+    records where the field is blank, which must decode to None. h2023 has no
+    written zero at all. A `.strip() or "0"` fallback would merge the two and
+    this test could not tell the difference, so it asserts the counts of each
+    kind rather than a property that one of them satisfies vacuously.
     """
+    decoded = [event.station_count for event in events]
+    raw = [line[92:95] for line in catalog_lines()]
+    assert all(count is None or count >= 0 for count in decoded)
+    # Every blank field decodes to None and no populated field does, so the two
+    # kinds cannot have been merged in either direction.
     assert all(
-        event.station_count is None or event.station_count > 0 for event in events
+        (count is None) == (not field.strip())
+        for count, field in zip(decoded, raw, strict=True)
     )
