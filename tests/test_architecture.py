@@ -133,8 +133,7 @@ def violations(module: str, imports: list[str]) -> list[str]:
                 )
         elif target in LAYERS and points_outward(importer=layer, imported=target):
             found.append(
-                f"{module} imports {imported!r}; "
-                f"{layer}/ must not depend on {target}/"
+                f"{module} imports {imported!r}; {layer}/ must not depend on {target}/"
             )
     return found
 
@@ -342,9 +341,7 @@ def test_infrastructure_importing_controller_is_a_violation() -> None:
     assert "jmacat.controller.cli" in message
 
 
-def test_infrastructure_importing_controller_via_the_parent_package_is_a_violation() -> (
-    None
-):
+def test_infrastructure_reaching_controller_via_the_parent_is_a_violation() -> None:
     """`from jmacat import controller` — the shape that was the original blind spot."""
     (message,) = violations(
         "jmacat.infrastructure.parquet", ["jmacat", "jmacat.controller"]
@@ -352,7 +349,9 @@ def test_infrastructure_importing_controller_via_the_parent_package_is_a_violati
     assert "jmacat.controller" in message
 
 
-def test_infrastructure_importing_the_controller_package_itself_is_a_violation() -> None:
+def test_infrastructure_importing_the_controller_package_itself_is_a_violation() -> (
+    None
+):
     (message,) = violations("jmacat.infrastructure.parquet", ["jmacat.controller"])
     assert "jmacat.controller" in message
 
@@ -370,7 +369,9 @@ def test_infrastructure_importing_its_own_sibling_module_is_allowed() -> None:
 
 def test_infrastructure_importing_domain_is_allowed() -> None:
     """An adapter serialises a domain value object, so it must be able to see it."""
-    assert violations("jmacat.infrastructure.parquet", ["jmacat.domain.hypocenter"]) == []
+    assert (
+        violations("jmacat.infrastructure.parquet", ["jmacat.domain.hypocenter"]) == []
+    )
 
 
 def test_infrastructure_importing_usecase_is_allowed() -> None:
@@ -397,8 +398,12 @@ def test_controller_importing_infrastructure_is_allowed() -> None:
     )
 
 
-def test_controller_importing_infrastructure_via_the_parent_package_is_allowed() -> None:
-    assert violations("jmacat.controller.cli", ["jmacat", "jmacat.infrastructure"]) == []
+def test_controller_importing_infrastructure_via_the_parent_package_is_allowed() -> (
+    None
+):
+    assert (
+        violations("jmacat.controller.cli", ["jmacat", "jmacat.infrastructure"]) == []
+    )
 
 
 def test_controller_importing_domain_is_allowed() -> None:
@@ -513,7 +518,9 @@ def test_the_guard_catches_a_plain_outward_import_from_infrastructure() -> None:
 
 def test_the_guard_catches_a_bare_parent_relative_outward_leak() -> None:
     """`from .. import controller` inside jmacat.infrastructure.leak."""
-    (message,) = scan("from .. import controller\n", module="jmacat.infrastructure.leak")
+    (message,) = scan(
+        "from .. import controller\n", module="jmacat.infrastructure.leak"
+    )
     assert "jmacat.controller" in message
 
 
