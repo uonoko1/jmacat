@@ -463,6 +463,78 @@ A parser covering years before 1989 must switch tables on the record's year.
 Observed in `h2023` — damage: blank(257,002) `2`(8) `3`(6) `1`(3) `7`(1);
 tsunami: blank(257,008) `1`(10) `2`(2).
 
+### District and region numbers (fields 27-28, c65-68)
+
+These are JMA **Appendix 1.A.3 震央地名表**, reached from the bulletin appendix index at
+`catalog/appendix/appendixj.html#REGION` and split across `regname1.html` … `regname8.html`,
+one page per district. Each page is a plain HTML `<table>` with exactly the three columns
+needed: 大地域区分番号 (district, c65), 小地域区分番号 (region, c66-68) and 震央地名
+(region name, c69-92).
+
+District numbers `1`-`8` are the geographical districts named on those pages:
+
+| c65 | Page | District |
+| --- | --- | --- |
+| 1 | `regname1.html` | 北海道 — Hokkaido |
+| 2 | `regname2.html` | 東北 — Tohoku |
+| 3 | `regname3.html` | 関東 — Kanto |
+| 4 | `regname4.html` | 中部 — Chubu |
+| 5 | `regname5.html` | 近畿 — Kinki |
+| 6 | `regname6.html` | 中国、四国 — Chugoku and Shikoku |
+| 7 | `regname7.html` | 九州、沖縄 — Kyushu and Okinawa |
+| 8 | `regname8.html` | 日本周辺 — around Japan |
+| 9 | — | **not in the appendix**; see below |
+
+The eight pages yield **269 (district, region) pairs**. Rather than reproduce 269 rows here,
+where they would swamp a format reference that is otherwise read front to back, the mapping is
+carried as a generated fixture — see *Where the region-name table lives* below.
+
+**Validated against the data.** Building the mapping from the eight pages and comparing its
+name against the record's own 24-byte region name field:
+
+| Corpus | Matched | Mismatched | District or region blank | Unmapped |
+| --- | --- | --- | --- | --- |
+| `h2023` | 256,868 | 0 | 87 (the `U` records) | 65 |
+| `h1919` | 27,536 | 1 | 667 | 31 |
+
+Every unmapped record is district `8` / region `400` = `FAR FIELD`, a sentinel that does not
+appear in the appendix table. The single `h1919` mismatch is district 8 / region 324, which the
+appendix names `KURILE ISLANDS REGION` and one 1919 record writes as `KURILE ISLANDS`; across
+both corpora that is the only (district, region) pair carrying more than one distinct name in
+285,255 records. So the numeric pair determines the name, but the historical name *text* is not
+byte-stable — key on the numbers, not the string.
+
+District `9` occurs in `h2023` (73 of the 87 `U` records; `8` covers the other 14) and on 3
+`h1919` records, yet has no `regname9.html` page. Combined with `8`/`400` = `FAR FIELD`, the
+reading is that `8` and `9` are used for events outside the appendix's Japan-centred scheme;
+the appendix does not say so. See *Unresolved* item 3.
+
+#### Where the region-name table lives
+
+The 269 rows are **not** inlined in this document, and are **not** a hand-maintained list. The
+reasoning:
+
+- This file is a format reference meant to be read end to end. A 269-row table in the middle of
+  it costs far more readability than it buys, and nothing in it is needed to *parse* a record —
+  the region name is already present verbatim in c69-92 of every record that has one.
+- The mapping is a JMA-published dataset that can change when JMA revises the appendix. Copying
+  it by hand into prose creates a second source of truth that will drift silently.
+- Issues #3/#4 want it as a test fixture, which needs a machine-readable file, not a Markdown
+  table.
+
+So the appendix URLs are cited here as the authority, and the mapping is *generated* from those
+pages by `tools/build_region_names.py` (standard library only), which emits JSON keyed
+`"district:region"` for use as a test fixture:
+
+```
+python3 tools/build_region_names.py > region_names.json   # 269 entries, districts 1-8
+```
+
+Regenerating it and re-running the comparison above is the check that the copy is still
+faithful; the row counts in this section are the expected result of that check. The generated
+file is not committed here — it belongs with the parser work in issues #3/#4, which is also
+where it becomes a fixture.
+
 ### Determination flag codes (field 31, c96)
 
 | Code | Meaning |
