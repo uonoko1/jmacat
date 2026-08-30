@@ -297,9 +297,118 @@ def test_a_module_reports_every_violating_import_not_only_the_first() -> None:
     assert len(violations("jmacat.domain.record", ["pyarrow", "httpx"])) == 2
 
 
+# --- infrastructure/ must not depend on controller/ (issue #21) -------------
+#
+# Until issue #21 these all returned [] because `violations` bailed out for any
+# layer outside PURE_LAYERS. The rule CONTRIBUTING states was never enforced for
+# the two outer layers, and nobody noticed because the original evidence only
+# ever covered domain/ and usecase/.
+
+
+def test_infrastructure_importing_controller_is_a_violation() -> None:
+    (message,) = violations("jmacat.infrastructure.parquet", ["jmacat.controller.cli"])
+    assert "jmacat.controller.cli" in message
+
+
+def test_infrastructure_importing_controller_via_the_parent_package_is_a_violation() -> (
+    None
+):
+    """`from jmacat import controller` — the shape that was the original blind spot."""
+    (message,) = violations(
+        "jmacat.infrastructure.parquet", ["jmacat", "jmacat.controller"]
+    )
+    assert "jmacat.controller" in message
+
+
+def test_infrastructure_importing_the_controller_package_itself_is_a_violation() -> None:
+    (message,) = violations("jmacat.infrastructure.parquet", ["jmacat.controller"])
+    assert "jmacat.controller" in message
+
+
+def test_infrastructure_importing_its_own_sibling_module_is_allowed() -> None:
+    """A layer always reaches itself; do not over-correct into a false positive."""
+    assert (
+        violations(
+            "jmacat.infrastructure.parquet",
+            ["jmacat.infrastructure", "jmacat.infrastructure.event_schema"],
+        )
+        == []
+    )
+
+
+def test_infrastructure_importing_domain_is_allowed() -> None:
+    """An adapter serialises a domain value object, so it must be able to see it."""
+    assert violations("jmacat.infrastructure.parquet", ["jmacat.domain.hypocenter"]) == []
+
+
+def test_infrastructure_importing_usecase_is_allowed() -> None:
+    assert (
+        violations(
+            "jmacat.infrastructure.parquet",
+            ["jmacat.usecase.ports", "jmacat.usecase.errors"],
+        )
+        == []
+    )
+
+
+# --- controller/ is the composition root ------------------------------------
+
+
+def test_controller_importing_infrastructure_is_allowed() -> None:
+    """Composition happens at the outermost layer; the CLI wires the adapters."""
+    assert (
+        violations(
+            "jmacat.controller.cli",
+            ["jmacat.infrastructure.parquet_event_writer"],
+        )
+        == []
+    )
+
+
+def test_controller_importing_infrastructure_via_the_parent_package_is_allowed() -> None:
+    assert violations("jmacat.controller.cli", ["jmacat", "jmacat.infrastructure"]) == []
+
+
+def test_controller_importing_domain_is_allowed() -> None:
+    assert violations("jmacat.controller.cli", ["jmacat.domain.filters"]) == []
+
+
+def test_controller_importing_a_third_party_package_is_allowed() -> None:
+    """The CLI parses arguments and formats output; a library there is expected."""
+    assert violations("jmacat.controller.cli", ["typer", "rich.table"]) == []
+
+
+def test_infrastructure_may_import_a_third_party_package() -> None:
+    assert violations("jmacat.infrastructure.parquet", ["pyarrow.parquet"]) == []
+
+
+def test_an_outer_module_reports_every_violating_import_not_only_the_first() -> None:
+    """The loop must not stop at the first find, for outer layers too."""
+    assert (
+        len(
+            violations(
+                "jmacat.infrastructure.parquet",
+                ["jmacat.controller", "jmacat.controller.cli"],
+            )
+        )
+        == 2
+    )
+
+
 def test_the_guard_actually_finds_the_source_tree() -> None:
     """A guard that scans nothing would pass vacuously for ever."""
     assert len(list(source_modules())) >= 5
+
+
+def test_the_guard_scans_every_layer_it_claims_to_cover() -> None:
+    """Vacuity, per layer: `no module breaks the rule` is empty for a layer we
+    never scanned, and that is exactly how issue #21 stayed invisible.
+
+    `controller/` currently holds only `__init__.py`, which is a real module
+    under the rule, so the assertion is on the layer being reached at all.
+    """
+    scanned = {layer_of(module) for _, module in source_modules()}
+    assert set(PURE_LAYERS) | set(OUTER_LAYERS) <= scanned
 
 
 def scan(source: str, *, module: str) -> list[str]:
@@ -333,6 +442,58 @@ def test_the_guard_catches_a_relative_leak_from_a_nested_package() -> None:
 
 def test_the_guard_allows_an_inward_import_written_the_idiomatic_way() -> None:
     assert scan("from jmacat import domain\n", module="jmacat.usecase.export") == []
+
+
+def test_the_guard_catches_an_outward_leak_written_the_idiomatic_way() -> None:
+    """`from jmacat import controller` inside infrastructure/, end to end."""
+    leak = textwrap.dedent("""
+        from jmacat import controller
+
+        def report() -> None:
+            controller.echo("done")
+    """)
+    (message,) = scan(leak, module="jmacat.infrastructure.leak")
+    assert "jmacat.controller" in message
+
+
+def test_the_guard_catches_an_absolute_outward_leak_from_infrastructure() -> None:
+    (message,) = scan(
+        "from jmacat.controller import cli\n", module="jmacat.infrastructure.leak"
+    )
+    assert "jmacat.controller" in message
+
+
+def test_the_guard_catches_a_plain_outward_import_from_infrastructure() -> None:
+    (message,) = scan(
+        "import jmacat.controller.cli\n", module="jmacat.infrastructure.leak"
+    )
+    assert "jmacat.controller.cli" in message
+
+
+def test_the_guard_catches_a_bare_parent_relative_outward_leak() -> None:
+    """`from .. import controller` inside jmacat.infrastructure.leak."""
+    (message,) = scan("from .. import controller\n", module="jmacat.infrastructure.leak")
+    assert "jmacat.controller" in message
+
+
+def test_the_guard_catches_a_grandparent_relative_outward_leak() -> None:
+    """`from ...controller import cli` inside a nested infrastructure package."""
+    (message,) = scan(
+        "from ...controller import cli\n", module="jmacat.infrastructure.codec.leak"
+    )
+    assert "jmacat.controller" in message
+
+
+def test_the_guard_allows_the_composition_root_wiring_an_adapter() -> None:
+    """The legitimate shape Dev-H's CLI needs; it must stay green."""
+    wiring = textwrap.dedent("""
+        from jmacat.infrastructure.parquet_event_writer import ParquetEventWriter
+        from jmacat.usecase.ports import EventWriter
+
+        def build() -> EventWriter[object]:
+            return ParquetEventWriter()
+    """)
+    assert scan(wiring, module="jmacat.controller.cli") == []
 
 
 def test_no_module_breaks_the_dependency_rule() -> None:
