@@ -17,7 +17,7 @@ compression context dominate (a 1,000-row group buys nothing and costs a
 statistics block per column per group); too large and the writer holds the whole
 thing in memory, which is the problem being solved. Parquet's own guidance puts
 the useful range in the hundreds of thousands of rows for wide tables; this
-table is 25 narrow columns, so the row *count* can sit at the low end of that
+table is 17 narrow columns, so the row *count* can sit at the low end of that
 and still produce groups worth reading selectively. 50,000 rows across these
 columns is a few megabytes of buffered Python objects, which is bounded and
 small, and six groups over a year is enough granularity for a reader filtering
@@ -82,6 +82,7 @@ _ARROW_TYPES: Final[dict[str, Any]] = {
     "string": pa.string(),
     "double": pa.float64(),
     "int32": pa.int32(),
+    "bool": pa.bool_(),
     "timestamp[ms, tz=UTC]": pa.timestamp("ms", tz="UTC"),
     "timestamp[ms, tz=+09:00]": pa.timestamp("ms", tz="+09:00"),
 }

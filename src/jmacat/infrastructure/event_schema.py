@@ -7,6 +7,47 @@ against — a column whose unit lives only in a developer's head is how a
 hundredfold error ships unnoticed (see *Traps* 5 and 9 in
 `docs/jma-hypocenter-format.md`).
 
+Scope: what the parser decodes, and nothing else
+------------------------------------------------
+
+Every column below is read from an attribute that `domain.hypocenter.Hypocenter`
+actually carries. The record has 31 fields; the parser decodes 16 of them, and
+this schema exposes exactly those.
+
+An earlier revision of this table also declared columns for the eleven fields
+nobody decodes — the four standard errors, the travel time table, the location
+precision, the subsidiary information, the maximum intensity, the damage and
+tsunami classes and the determination flag. Every one of them would have been
+null on every row of every file, forever. That is worse than an absent column,
+because a null column *looks like data*: a reader sees `maximum_intensity` in
+the schema, finds it empty, and concludes that no event in 2023 was felt.
+An absent column asks a question; an always-null column answers it wrongly.
+
+Adding them back once the parser decodes them is a purely **additive** schema
+change — a new column at the end of the table — which is the cheap direction.
+The README says so under *Columns* so that a reader is not left wondering
+whether their absence means the data does not exist.
+
+Types the writers accept
+------------------------
+
+The domain hands out `Decimal` coordinates and a `RecordType` **enum**, neither
+of which a serialiser may guess at:
+
+* `Decimal` -> `float`, by `_as_double`, here, once, for both formats. The
+  schema declares `double`; the narrowing therefore belongs to the schema and
+  not to whichever writer happens to run. Doing it per-writer is what let CSV
+  write `str(Decimal("142.93183333333333"))` while Parquet stored the nearest
+  double, `142.93183333333334` — the two formats disagreeing about a coordinate,
+  with no error from either.
+* `RecordType` -> its `.value`, by `_record_type_code`. `str()` on an enum
+  member is `"RecordType.JMA"`, which is a perfectly valid string and would have
+  gone into the CSV column unremarked.
+
+Both conversions are explicit and total. What a writer must never do is fall
+back to `str()` on a type it has no rule for; `csv_event_writer._render` raises
+instead, so an unhandled type is loud in both formats rather than in neither.
+
 Time zone
 ---------
 
@@ -50,6 +91,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Final
 
 from jmacat.infrastructure.event_protocol import HypocenterEventLike
@@ -63,8 +105,8 @@ class Column:
     `pa.DataType`. Keeping it a string lets this module stay importable — and
     the schema stay assertable in a test — without pyarrow, which matters
     because the CSV writer needs the same table and has no reason to pull in
-    Arrow. `event_parquet.py` turns these names into real Arrow types in one
-    place.
+    Arrow. `parquet_event_writer.py` turns these names into real Arrow types in
+    one place.
     """
 
     name: str
@@ -75,6 +117,41 @@ class Column:
     extract: Callable[[HypocenterEventLike], object]
 
 
+def _as_double(value: Decimal | None) -> float | None:
+    """A domain `Decimal` as the `double` this schema declares, or `None`.
+
+    The single place the narrowing happens, so both writers serialise the
+    identical IEEE-754 value. `float(Decimal)` is correctly rounded to the
+    nearest double, and CSV then writes that double's `repr` — the shortest
+    text that reads back as the same double — so the two formats agree bit for
+    bit.
+
+    The alternative, letting each writer handle `Decimal` its own way, is what
+    the review found: CSV rendered `str(Decimal("142.93183333333333"))` and
+    Parquet stored `142.93183333333334`, and the two files disagreed about
+    where the epicentre was.
+
+    Precision is not lost that a `double` could have held: the record's
+    coordinates are decoded from fixed-point fields of at most six significant
+    digits, and a double carries fifteen. What is lost is the *exactness* of the
+    decimal representation, which no `double` column can carry by definition —
+    that is what declaring the column `double` means, and it is stated here
+    rather than discovered from a diff of the two outputs.
+    """
+    return None if value is None else float(value)
+
+
+def _record_type_code(event: HypocenterEventLike) -> str:
+    """The record type as its published one-character code.
+
+    `.value`, never `str()`. `str(RecordType.JMA)` is `"RecordType.JMA"`, a
+    valid string that CSV would write into the column without complaint — the
+    member *name* is a Python identifier, while `.value` is what the record
+    contains and what a researcher joins against.
+    """
+    return event.record_type.value
+
+
 #: The output columns, in order.
 #:
 #: Order is part of the contract. Parquet carries its schema in the footer and
@@ -82,15 +159,16 @@ class Column:
 #: consumer that reads by position would silently transpose two float columns.
 #: So the order is pinned here and asserted in a test.
 #:
-#: Every column below maps to a field of the 96-byte record; the field numbers
-#: in the comments are those of the field table in `docs/jma-hypocenter-format.md`.
+#: Every column below maps to a field of the 96-byte record that the parser
+#: decodes; the field numbers in the comments are those of the field table in
+#: `docs/jma-hypocenter-format.md`.
 COLUMNS: Final[tuple[Column, ...]] = (
     Column(
         name="record_type",
         arrow_type_name="string",
-        unit="code",
+        unit="code: J=JMA, U=USGS, I=another international agency",
         null_meaning="never null; the record type identifier is always present",
-        extract=lambda event: event.record_type,
+        extract=_record_type_code,
     ),
     Column(
         name="origin_time_utc",
@@ -107,42 +185,50 @@ COLUMNS: Final[tuple[Column, ...]] = (
         extract=lambda event: event.origin_time,
     ),
     Column(
-        name="origin_time_second_error_s",
-        arrow_type_name="double",
-        unit="seconds",
-        null_meaning=(
-            "no standard error published: the hypocenter was fixed, or a "
-            "Matched-filter template hypocenter was adopted (field 8)"
+        name="second_is_known",
+        arrow_type_name="bool",
+        unit=(
+            "true when the record determined the second; false when it located "
+            "the event only to the minute"
         ),
-        extract=lambda event: event.origin_time_error_s,
+        null_meaning=(
+            "never null; false is a determination about the record, not a missing value"
+        ),
+        extract=lambda event: event.second_is_known,
     ),
     Column(
         name="latitude_deg",
         arrow_type_name="double",
         unit="decimal degrees",
         null_meaning="never null; positive north, negative south",
-        extract=lambda event: event.latitude_deg,
+        extract=lambda event: _as_double(event.latitude),
     ),
     Column(
-        name="latitude_error_min",
-        arrow_type_name="double",
-        unit="minutes of arc",
-        null_meaning="no standard error published (field 11)",
-        extract=lambda event: event.latitude_error_min,
+        name="latitude_minutes_are_known",
+        arrow_type_name="bool",
+        unit=(
+            "true when the latitude was published to decimal minutes; false "
+            "when only the whole degree was given"
+        ),
+        null_meaning="never null; false is a statement about the record's precision",
+        extract=lambda event: event.latitude_minutes_are_known,
     ),
     Column(
         name="longitude_deg",
         arrow_type_name="double",
         unit="decimal degrees",
         null_meaning="never null; positive east, negative west",
-        extract=lambda event: event.longitude_deg,
+        extract=lambda event: _as_double(event.longitude),
     ),
     Column(
-        name="longitude_error_min",
-        arrow_type_name="double",
-        unit="minutes of arc",
-        null_meaning="no standard error published (field 14)",
-        extract=lambda event: event.longitude_error_min,
+        name="longitude_minutes_are_known",
+        arrow_type_name="bool",
+        unit=(
+            "true when the longitude was published to decimal minutes; false "
+            "when only the whole degree was given"
+        ),
+        null_meaning="never null; false is a statement about the record's precision",
+        extract=lambda event: event.longitude_minutes_are_known,
     ),
     Column(
         name="depth_km",
@@ -152,109 +238,49 @@ COLUMNS: Final[tuple[Column, ...]] = (
             "depth not determined. Never 0.0, which is a real and common "
             "shallow depth (*Traps* 6)"
         ),
-        extract=lambda event: event.depth_km,
+        extract=lambda event: _as_double(event.depth_km),
     ),
     Column(
-        name="depth_error_km",
+        name="magnitude",
         arrow_type_name="double",
-        unit="kilometres",
-        null_meaning=(
-            "no standard error published: blank unless the depth-free method "
-            "was used (field 16)"
-        ),
-        extract=lambda event: event.depth_error_km,
-    ),
-    Column(
-        name="magnitude1",
-        arrow_type_name="double",
-        unit="magnitude (dimensionless), on the scale named by magnitude1_type",
+        unit="magnitude (dimensionless), on the scale named by magnitude_type",
         null_meaning=(
             "no magnitude determined (9,973 records in h2023). Never 0.0: "
             "micro-earthquakes are routinely negative, so 0.0 is a plausible "
             "measured value and would not look wrong"
         ),
-        extract=lambda event: event.magnitude1,
+        extract=lambda event: _as_double(event.magnitude),
     ),
     Column(
-        name="magnitude1_type",
+        name="magnitude_type",
         arrow_type_name="string",
-        unit="code: J=MJ, D=MD, d=MD 2 stations, V=MV, v=MV 2-3 stations, "
-        "W=MW, B=mb, S=MS",
-        null_meaning="undetermined; null on exactly the rows where magnitude1 is null",
-        extract=lambda event: event.magnitude1_type,
+        unit=(
+            "code: J=MJ, D=MD, d=MD 2 stations, V=MV, v=MV 2-3 stations, "
+            "W=MW, B=mb, S=MS"
+        ),
+        null_meaning="undetermined; null on exactly the rows where magnitude is null",
+        extract=lambda event: event.magnitude_type,
     ),
     Column(
-        name="magnitude2",
+        name="magnitude_2",
         arrow_type_name="double",
-        unit="magnitude (dimensionless), on the scale named by magnitude2_type",
+        unit="magnitude (dimensionless), on the scale named by magnitude_type_2",
         null_meaning="no second magnitude determined (blank on 256,259 of h2023)",
-        extract=lambda event: event.magnitude2,
+        extract=lambda event: _as_double(event.magnitude_2),
     ),
     Column(
-        name="magnitude2_type",
+        name="magnitude_type_2",
         arrow_type_name="string",
-        unit="code; same table as magnitude1_type",
+        unit="code, on the same table as magnitude_type",
         null_meaning="undetermined",
-        extract=lambda event: event.magnitude2_type,
+        extract=lambda event: event.magnitude_type_2,
     ),
     Column(
-        name="travel_time_table",
-        arrow_type_name="string",
-        unit="code 1-7; see *Travel time table codes*",
-        null_meaning="determined by another agency (field 21)",
-        extract=lambda event: event.travel_time_table,
-    ),
-    Column(
-        name="location_precision",
-        arrow_type_name="string",
-        unit="code 1-9 or M; see *Location precision codes*",
-        null_meaning="unknown (field 22)",
-        extract=lambda event: event.location_precision,
-    ),
-    Column(
-        name="subsidiary_information",
-        arrow_type_name="string",
-        unit=(
-            "code: 1=natural, 2=insufficient JMA stations, 3=artificial, "
-            "4=eruption-related, 5=low-frequency event"
-        ),
-        null_meaning="blank for non-JMA determinations (field 23)",
-        extract=lambda event: event.subsidiary_information,
-    ),
-    Column(
-        name="maximum_intensity",
-        arrow_type_name="string",
-        unit=(
-            "JMA shindo code; 1-4 and 7 are the shindo, A/B are 5-lower/upper, "
-            "C/D are 6-lower/upper. Kept as a code, not a number: the scale is "
-            "ordinal and 5-lower has no numeric spelling"
-        ),
-        null_meaning="not felt, or no intensity assigned (field 24)",
-        extract=lambda event: event.maximum_intensity,
-    ),
-    Column(
-        name="damage_class",
-        arrow_type_name="string",
-        unit="Utsu damage class code 1-7, X or Y",
-        null_meaning="no damage recorded (field 25)",
-        extract=lambda event: event.damage_class,
-    ),
-    Column(
-        name="tsunami_class",
-        arrow_type_name="string",
-        unit=(
-            "tsunami class code; the code table depends on the record's year "
-            "(Utsu before 1989, Imamura-Iida from 1989)"
-        ),
-        null_meaning="no tsunami recorded (field 26)",
-        extract=lambda event: event.tsunami_class,
-    ),
-    Column(
-        name="district_number",
+        name="district",
         arrow_type_name="int32",
-        unit="JMA geographical district 1-9 (Appendix 1.A.3)",
+        unit="JMA geographical district number (Appendix 1.A.3)",
         null_meaning="not assigned (field 27)",
-        extract=lambda event: event.district_number,
+        extract=lambda event: event.district,
     ),
     Column(
         name="region_number",
@@ -269,8 +295,8 @@ COLUMNS: Final[tuple[Column, ...]] = (
         unit="ASCII epicentre region name as published in the record",
         null_meaning=(
             "blank in the record (553 records in h1919). The name text is not "
-            "byte-stable across years; key on district_number and "
-            "region_number, not on this string"
+            "byte-stable across years; key on district and region_number, not "
+            "on this string"
         ),
         extract=lambda event: event.region_name,
     ),
@@ -283,13 +309,6 @@ COLUMNS: Final[tuple[Column, ...]] = (
             "from no stations at all"
         ),
         extract=lambda event: event.station_count,
-    ),
-    Column(
-        name="determination_flag",
-        arrow_type_name="string",
-        unit="code; see *Determination flag codes*",
-        null_meaning="blank for non-JMA determinations (field 31)",
-        extract=lambda event: event.determination_flag,
     ),
 )
 

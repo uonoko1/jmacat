@@ -37,6 +37,19 @@ degrees, and `%.6f` writes 142.931833, which is a different position — about
 4 cm here, but the same class of silent loss that *Traps* 1 is about, and there
 is no reason to accept any of it.
 
+Because `event_schema` has already narrowed the domain's `Decimal` to the
+`double` the column declares, `repr` here is the `repr` of the *same* double
+Parquet stores. The two formats therefore agree on a coordinate exactly, and
+`test_format_agreement.py` pins that against the value that first showed them
+disagreeing.
+
+**Unknown types are refused, not stringified.** `csv.writer` would call `str()`
+on anything, and `str()` never raises: a `Decimal` would print at a precision
+the Parquet column does not share, and an enum member would print as
+`RecordType.JMA`. `_render` therefore accepts a closed list of types and raises
+`EventWriterError` for everything else, so a type nobody wrote a rule for fails
+in CSV exactly as loudly as Arrow already fails it in Parquet.
+
 **Time zone.** Both timestamp columns are ISO 8601 with an explicit offset:
 `...Z` for UTC and `...+09:00` for JST. No naive text is ever written. See
 `event_schema` for why both columns exist.
@@ -211,17 +224,47 @@ def _unlink(path: Path) -> None:
         pass
 
 
+#: Every type this writer knows how to turn into a CSV cell.
+#:
+#: A closed list, not a fallback. `csv.writer` calls `str()` on whatever it is
+#: handed, and `str()` never fails: a `Decimal` becomes text at a precision the
+#: Parquet column does not share, and an enum member becomes `"RecordType.JMA"`,
+#: which is a perfectly ordinary string that lands in the column with no error
+#: anywhere. Both were real: see the module docstring of `event_schema`.
+#:
+#: So an unrecognised type raises here instead. A type the writer has no rule
+#: for is a programming error — a schema `extract` returning something new, or a
+#: domain type that changed underfoot — and CONTRIBUTING's "prefer failing
+#: loudly over returning a value that might be wrong" makes that an exception,
+#: not a `str()`. It also keeps the two formats honest with each other: Arrow
+#: already rejects a value it cannot fit in the declared column type, so with
+#: this check the CSV writer refuses exactly what the Parquet writer refuses.
+_RENDERABLE: Final = (bool, int, float, str)
+
+
 def _render(column_name: str, value: object) -> Any:
     """One cell, as the text that must read back as the value written.
 
     Returns `None` for a null, which `csv.writer` renders as an empty unquoted
-    field, and the two-character string `""`-quoted empty for a genuine empty
-    string, so the two stay distinguishable.
+    field. An empty string is deliberately collapsed to that same empty field:
+    CSV has one empty field and two things to say with it, and the module
+    docstring sets out why the collapse is lossless for this catalog and why
+    `csv.QUOTE_NOTNULL` is not available at the 3.11 baseline.
+
+    Raises `EventWriterError` for any type not in `_RENDERABLE`.
     """
     if value is None:
         return None
     if column_name in _TIMESTAMP_ZONES:
         return _render_timestamp(column_name, value)
+    if not isinstance(value, _RENDERABLE):
+        raise EventWriterError(
+            f"Column {column_name!r} produced a "
+            f"{type(value).__name__}, which this writer has no rule for. "
+            "Rendering it with str() could write text that disagrees with the "
+            "Parquet column for the same value, so it is refused. Convert it "
+            "in event_schema.py, where both writers see the conversion."
+        )
     if isinstance(value, float):
         # `repr` is the shortest text that reads back as the identical double.
         return repr(value)
