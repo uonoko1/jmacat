@@ -22,6 +22,7 @@ from collections.abc import Iterator
 import pytest
 
 from jmacat.usecase.errors import (
+    CatalogRetrievalError,
     CatalogSourceError,
     CatalogYearUnavailableError,
     EventWriterError,
@@ -273,3 +274,36 @@ class TestErrorHierarchy:
 
     def test_port_errors_are_exceptions(self) -> None:
         assert issubclass(PortError, Exception)
+
+
+class TestErrorRetryability:
+    """Retryability is carried on the error, not re-derived by each caller.
+
+    A retry loop reads `err.retryable`; it must not have to know the taxonomy.
+    """
+
+    def test_an_unpublished_year_is_not_retryable(self) -> None:
+        """Waiting will not make JMA publish h2024.zip sooner."""
+        assert CatalogYearUnavailableError(2024).retryable is False
+
+    def test_a_transfer_or_archive_failure_is_retryable(self) -> None:
+        """A timeout, a 5xx or a truncated download may succeed on a re-run."""
+        assert CatalogRetrievalError("timeout").retryable is True
+
+    def test_a_writer_failure_is_not_retryable(self) -> None:
+        """A full disk does not fix itself, and a retry risks duplicate records."""
+        assert EventWriterError("disk full").retryable is False
+
+    def test_an_unrecognised_port_failure_defaults_to_not_retryable(self) -> None:
+        """A new subclass must opt in; the safe default is to fail loudly."""
+        assert PortError("something new").retryable is False
+
+    def test_retryability_is_readable_without_isinstance_checks(self) -> None:
+        """The point of the attribute: one branch handles every port error."""
+        errors: list[PortError] = [
+            CatalogYearUnavailableError(2024),
+            CatalogRetrievalError("timeout"),
+            EventWriterError("disk full"),
+        ]
+
+        assert [e.retryable for e in errors] == [False, True, False]
