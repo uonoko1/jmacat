@@ -91,6 +91,9 @@ def test_the_fixtures_are_all_96_bytes() -> None:
         TORISHIMA,
         SAGAMI_BAY,
         HAIYUAN,
+        CENTRAL_KURILE,
+        OFF_SHIKOTAN_PRECISE_LATITUDE,
+        OFF_SHIKOTAN_PRECISE_LONGITUDE,
     ):
         assert len(line) == 96, line
 
@@ -348,6 +351,41 @@ def test_a_trailing_newline_is_not_silently_accepted() -> None:
         parse_record(NEAR_CHOSHI + "\n")
 
 
+CENTRAL_KURILE = (
+    "J192501182105         47         154         60     74J    322      "
+    "CENTRAL KURILE IS          K"
+)
+"""h1919 line 2263. Both minutes fields wholly blank: 47 degN, 154 degE.
+
+One of the 4 h1919 records whose *longitude* minutes c37-40 are wholly blank,
+and one of the 7 whose latitude minutes c25-28 are. All 4 and all 7 carry
+location precision `3` (fixed depth, human judgement) in c60.
+"""
+
+OFF_SHIKOTAN_PRECISE_LATITUDE = (
+    "J192502011424         4330       148         60     64J    32       "
+    "OFF SHIKOTAN IS            K"
+)
+"""h1919 line 2284. Latitude minutes `30  ` present, longitude minutes blank.
+
+The two flags move independently, and this record is what proves it: latitude
+is determined to 43 deg 30.00 min while longitude is published only as the
+whole 148 degE. A parser that derived one flag from the other - or held either
+constant - would decode this record with a precision claim JMA did not make.
+"""
+
+OFF_SHIKOTAN_PRECISE_LONGITUDE = (
+    "J192502030712         43         14730       60     63J    321      "
+    "OFF SHIKOTAN IS            K"
+)
+"""h1919 line 2292. The mirror of the previous record: latitude minutes c25-28
+wholly blank at 43 degN, longitude minutes c37-40 `30  ` giving 147.5 degE.
+
+Together the two records exercise both flags in both states, so neither can be
+satisfied by a constant.
+"""
+
+
 def test_a_whole_degree_epicentre_is_flagged_as_reduced_precision() -> None:
     """h1919, a 1923 Kanto aftershock. Verbatim, 96 bytes:
 
@@ -376,6 +414,50 @@ def test_an_ordinary_record_is_not_flagged_as_reduced_precision() -> None:
     event = parse_record(NEAR_CHOSHI)
     assert event.latitude_minutes_are_known is True
     assert event.longitude_minutes_are_known is True
+
+
+def test_a_whole_degree_longitude_is_flagged_as_reduced_precision() -> None:
+    """h1919 line 2263, CENTRAL KURILE IS - both minutes fields wholly blank.
+
+    4 records in h1919 have longitude minutes c37-40 wholly blank, against 7
+    for latitude; the counts differ because the two fields are blanked
+    independently. Longitude degrees c33-36 are ` 154`, so the epicentre is
+    published as the whole 154 degE.
+
+    Without the flag, a decoded 154 is indistinguishable from a determination
+    of 154 deg 00.00 min - a claim of precision to the hundredth of a minute,
+    about 15 m, that JMA never made for this 1925 record.
+    """
+    event = parse_record(CENTRAL_KURILE)
+    assert event.latitude == Decimal(47)
+    assert event.latitude_minutes_are_known is False
+    assert event.longitude == Decimal(154)
+    assert event.longitude_minutes_are_known is False
+
+
+def test_the_two_minute_flags_are_independent_of_each_other() -> None:
+    """h1919 lines 2284 and 2292: each field blank while the other is present.
+
+    These two OFF SHIKOTAN IS records are mirror images. Line 2284 has latitude
+    minutes `30  ` with longitude minutes blank; line 2292 has latitude minutes
+    blank with longitude minutes `30  `. So each flag is observed True while
+    the other is False, in real data.
+
+    This is what a constant cannot satisfy: hard-wiring either flag to `True`
+    or deriving longitude's from latitude's passes any single-record test but
+    fails one of these two.
+    """
+    precise_latitude = parse_record(OFF_SHIKOTAN_PRECISE_LATITUDE)
+    assert precise_latitude.latitude == Decimal("43.5")
+    assert precise_latitude.latitude_minutes_are_known is True
+    assert precise_latitude.longitude == Decimal(148)
+    assert precise_latitude.longitude_minutes_are_known is False
+
+    precise_longitude = parse_record(OFF_SHIKOTAN_PRECISE_LONGITUDE)
+    assert precise_longitude.latitude == Decimal(43)
+    assert precise_longitude.latitude_minutes_are_known is False
+    assert precise_longitude.longitude == Decimal("147.5")
+    assert precise_longitude.longitude_minutes_are_known is True
 
 
 def test_a_written_zero_station_count_is_zero_not_absent() -> None:
